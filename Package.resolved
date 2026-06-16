@@ -1,0 +1,60 @@
+{
+  "originHash" : "5c59450369d88a01876af1fc7490b4b14b7d7055a5f4f7858b44ac120bfc5f3b",
+  "pins" : [
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    },
+    {
+      "identity" : "swift-atomics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-atomics.git",
+      "state" : {
+        "revision" : "b601256eab081c0f92f059e12818ac1d4f178ff7",
+        "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "swift-cli-mcp",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/alexmx/swift-cli-mcp.git",
+      "state" : {
+        "revision" : "a8ed43ae006577382c2b9e70a8df1a53ec946e2f",
+        "version" : "1.1.0"
+      }
+    },
+    {
+      "identity" : "swift-subprocess",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-subprocess.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "049ddf99c37c50411ce2997dc92a36eb74460b98"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system",
+      "state" : {
+        "revision" : "7502b711c92a17741fa625d722b0ccbd595d8ed1",
+        "version" : "1.7.2"
+      }
+    },
+    {
+      "identity" : "toon-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/toon-format/toon-swift.git",
+      "state" : {
+        "revision" : "b519ede235854489e1fbfe05d171c69a3bf558e5",
+        "version" : "0.4.0"
+      }
+    }
+  ],
+  "version" : 3
+}
