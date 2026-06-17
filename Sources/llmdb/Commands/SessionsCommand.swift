@@ -11,6 +11,10 @@ struct SessionsCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        throw LlmdbError.notImplemented("sessions")
+        let sessions = try await DaemonClient.call(
+            method: "sessions",
+            as: [Session].self
+        )
+        try JSONOutput.print(sessions)
     }
 }

@@ -10,9 +10,12 @@ struct DaemonCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Stay attached to stderr instead of detaching")
     var foreground = false
 
+    @Option(name: .long, help: "Override the socket path (default: ~/Library/Caches/llmdb/llmdbd.sock)")
+    var socket: String?
+
     func run() async throws {
-        // TODO(M1): bind the Unix socket at ~/Library/Caches/llmdb/llmdbd.sock,
-        // accept JSON-RPC requests, route to SessionManager.
-        throw LlmdbError.notImplemented("daemon")
+        let daemon = Daemon(socketPath: socket ?? Daemon.defaultSocketPath)
+        try daemon.start()
+        await daemon.runForever()
     }
 }

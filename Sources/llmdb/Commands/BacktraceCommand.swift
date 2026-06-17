@@ -20,6 +20,11 @@ struct BacktraceCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        throw LlmdbError.notImplemented("bt")
+        let result = try await DaemonClient.call(
+            method: "bt",
+            params: BtParams(sessionId: session, threadId: thread, depth: depth),
+            as: BacktraceResult.self
+        )
+        try JSONOutput.print(result)
     }
 }

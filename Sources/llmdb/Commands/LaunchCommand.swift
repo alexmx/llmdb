@@ -17,7 +17,14 @@ struct LaunchCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        // TODO(M1): DaemonClient.send("launch", ["binary": binary, "args": arguments])
-        throw LlmdbError.notImplemented("launch")
+        let resolved = (binary as NSString).isAbsolutePath
+            ? binary
+            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(binary)
+        let snap = try await DaemonClient.call(
+            method: "launch",
+            params: LaunchParams(binary: resolved, args: arguments),
+            as: SessionSnapshot.self
+        )
+        try JSONOutput.print(snap)
     }
 }

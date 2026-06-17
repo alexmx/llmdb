@@ -11,17 +11,11 @@ struct BreakCommand: AsyncParsableCommand {
     struct SetSub: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "set",
-            abstract: "Set a breakpoint by file:line, symbol, or regex"
+            abstract: "Set a breakpoint by file:line (M1) or symbol/regex (M2)"
         )
 
-        @Argument(help: "Location: `<file>:<line>` (omit for --symbol or --regex)")
-        var location: String?
-
-        @Option(name: .long, help: "Set a symbol breakpoint")
-        var symbol: String?
-
-        @Option(name: .long, help: "Set a regex breakpoint")
-        var regex: String?
+        @Argument(help: "Location: `<file>:<line>`")
+        var location: String
 
         @Option(name: .long, help: "Session ID")
         var session: String?
@@ -30,7 +24,29 @@ struct BreakCommand: AsyncParsableCommand {
         var format: OutputFormat = .default
 
         func run() async throws {
-            throw LlmdbError.notImplemented("break set")
+            let (file, line) = try parseLocation(location)
+            let absolute = (file as NSString).isAbsolutePath
+                ? file
+                : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(file)
+            let result = try await DaemonClient.call(
+                method: "break.set",
+                params: BreakSetParams(sessionId: session, file: absolute, line: line),
+                as: BreakSetResult.self
+            )
+            try JSONOutput.print(result)
+        }
+
+        private func parseLocation(_ loc: String) throws -> (String, Int) {
+            guard let colon = loc.lastIndex(of: ":"),
+                  let line = Int(loc[loc.index(after: colon)...])
+            else {
+                throw LlmdbError.invalidArgument(
+                    name: "location",
+                    value: loc,
+                    valid: ["<file>:<line>"]
+                )
+            }
+            return (String(loc[..<colon]), line)
         }
     }
 
@@ -47,7 +63,7 @@ struct BreakCommand: AsyncParsableCommand {
         var format: OutputFormat = .default
 
         func run() async throws {
-            throw LlmdbError.notImplemented("break list")
+            throw LlmdbError.notImplemented("break list (M2)")
         }
     }
 
@@ -64,7 +80,7 @@ struct BreakCommand: AsyncParsableCommand {
         var session: String?
 
         func run() async throws {
-            throw LlmdbError.notImplemented("break delete")
+            throw LlmdbError.notImplemented("break delete (M2)")
         }
     }
 }

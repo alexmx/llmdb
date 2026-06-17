@@ -14,6 +14,11 @@ struct ContinueCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        throw LlmdbError.notImplemented("continue")
+        let snap = try await DaemonClient.call(
+            method: "continue",
+            params: SessionParams(sessionId: session),
+            as: SessionSnapshot.self
+        )
+        try JSONOutput.print(snap)
     }
 }

@@ -20,6 +20,11 @@ struct LocalsCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        throw LlmdbError.notImplemented("locals")
+        let result = try await DaemonClient.call(
+            method: "locals",
+            params: LocalsParams(sessionId: session, threadId: thread, frame: frame),
+            as: LocalsResult.self
+        )
+        try JSONOutput.print(result)
     }
 }
