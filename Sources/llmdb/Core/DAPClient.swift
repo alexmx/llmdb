@@ -3,10 +3,13 @@ import Foundation
 /// Speaks Debug Adapter Protocol to a child `lldb-dap` process.
 ///
 /// Spawns lldb-dap, frames Content-Length-prefixed JSON over its stdio,
-/// correlates request → response by `seq` via continuations, surfaces
-/// events on a nonisolated `AsyncStream<DAPEvent>`.
+/// correlates request → response by `seq` via continuations, broadcasts
+/// events to any number of subscribers obtained via `events()` or
+/// `waitForEvent(...)`. One DAPClient = one lldb-dap process = one debug session.
 ///
-/// One DAPClient = one lldb-dap process = one debug session.
+/// Subscription is actor-isolated so registration is atomic with respect to
+/// event dispatch — a caller can `events()` (or `waitForEvent`) and *then*
+/// send the request that triggers the event without racing.
 actor DAPClient {
     private let process: Process
     private let stdin: FileHandle
@@ -15,19 +18,28 @@ actor DAPClient {
 
     private var nextSeq = 0
     private var pending: [Int: CheckedContinuation<DAPResponse, Error>] = [:]
+    private var subscribers: [UUID: AsyncStream<DAPEvent>.Continuation] = [:]
     private var readBuffer = Data()
     private var closed = false
 
-    nonisolated let events: AsyncStream<DAPEvent>
-    private let eventContinuation: AsyncStream<DAPEvent>.Continuation
-
     // MARK: - Lifecycle
 
-    init(executable: String? = nil) throws {
-        let path = executable ?? Self.resolveExecutable()
+    /// Spawn `lldb-dap` and return a ready DAPClient. Resolves the executable
+    /// off the calling task (via `xcrun --find lldb-dap`) before constructing
+    /// the actor, so the blocking lookup doesn't park an actor's executor.
+    static func spawn(executable: String? = nil) async throws -> DAPClient {
+        let path: String
+        if let executable {
+            path = executable
+        } else {
+            path = await Self.resolveExecutable()
+        }
+        return try DAPClient(executablePath: path)
+    }
 
+    private init(executablePath: String) throws {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: path)
+        proc.executableURL = URL(fileURLWithPath: executablePath)
         let sin = Pipe(), sout = Pipe(), serr = Pipe()
         proc.standardInput = sin
         proc.standardOutput = sout
@@ -38,11 +50,6 @@ actor DAPClient {
         self.stdoutPipe = sout
         self.stderrPipe = serr
 
-        var captured: AsyncStream<DAPEvent>.Continuation!
-        let stream = AsyncStream<DAPEvent> { captured = $0 }
-        self.events = stream
-        self.eventContinuation = captured
-
         do {
             try proc.run()
         } catch {
@@ -52,12 +59,10 @@ actor DAPClient {
         // Non-blocking read loop. FileHandle invokes the handler on its own
         // internal queue whenever data is available; we forward chunks back
         // into the actor for parsing.
-        let writer = stdoutPipe.fileHandleForReading
-        writer.readabilityHandler = { [weak self] handle in
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
             guard let self else { return }
             if chunk.isEmpty {
-                // EOF — child exited or closed stdout.
                 handle.readabilityHandler = nil
                 Task { await self.handleClose() }
             } else {
@@ -67,26 +72,69 @@ actor DAPClient {
     }
 
     deinit {
-        // We can't await an actor method from deinit; do the synchronous parts.
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning {
-            process.terminate()
-        }
-        eventContinuation.finish()
+        if process.isRunning { process.terminate() }
+        for (_, cont) in subscribers { cont.finish() }
     }
 
     func terminate() {
         guard !closed else { return }
         closed = true
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning {
-            process.terminate()
-        }
-        eventContinuation.finish()
-        for (_, cont) in pending {
-            cont.resume(throwing: DAPError.closed)
-        }
+        if process.isRunning { process.terminate() }
+        for (_, cont) in subscribers { cont.finish() }
+        subscribers.removeAll()
+        for (_, cont) in pending { cont.resume(throwing: DAPError.closed) }
         pending.removeAll()
+    }
+
+    // MARK: - Events (fan-out)
+
+    /// Subscribe to all DAP events for this session. Each call returns a fresh
+    /// stream; every subscriber sees every event. The stream finishes when the
+    /// session closes (lldb-dap exits, EOF on stdout, or `terminate()`).
+    ///
+    /// Actor-isolated so registration is atomic — issue `events()` (or
+    /// `waitForEvent`) *before* the request that triggers the event you want
+    /// and you cannot miss it.
+    func events() -> AsyncStream<DAPEvent> {
+        let id = UUID()
+        var captured: AsyncStream<DAPEvent>.Continuation!
+        let stream = AsyncStream<DAPEvent>(bufferingPolicy: .unbounded) { captured = $0 }
+        captured.onTermination = { @Sendable [weak self] _ in
+            Task { await self?.removeSubscriber(id: id) }
+        }
+        subscribers[id] = captured
+        return stream
+    }
+
+    /// Wait for an event matching `predicate`, with a timeout. Subscription
+    /// happens synchronously on the actor before returning — the returned Task
+    /// can be safely awaited *after* sending the triggering request.
+    func waitForEvent(
+        timeout: TimeInterval,
+        matching predicate: @escaping @Sendable (DAPEvent) -> Bool
+    ) -> Task<DAPEvent, Error> {
+        let stream = events()
+        return Task {
+            try await withThrowingTaskGroup(of: DAPEvent.self) { group in
+                group.addTask {
+                    for await event in stream where predicate(event) { return event }
+                    throw DAPError.closed
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    throw DAPError.responseError(command: "waitForEvent", message: "timed out after \(timeout)s")
+                }
+                let event = try await group.next()!
+                group.cancelAll()
+                return event
+            }
+        }
+    }
+
+    private func removeSubscriber(id: UUID) {
+        subscribers.removeValue(forKey: id)
     }
 
     // MARK: - Requests
@@ -103,17 +151,9 @@ actor DAPClient {
         nextSeq += 1
         let seq = nextSeq
 
-        // Build the request envelope. We encode arguments to JSON then merge it
-        // into the envelope dict so we don't need a generic envelope type.
-        let argsData = try JSONEncoder().encode(arguments)
-        let argsObj = try JSONSerialization.jsonObject(with: argsData)
-        let envelope: [String: Any] = [
-            "seq": seq,
-            "type": "request",
-            "command": command,
-            "arguments": argsObj
-        ]
-        let body = try JSONSerialization.data(withJSONObject: envelope)
+        let body = try JSONEncoder().encode(
+            DAPRequestEnvelope(seq: seq, command: command, arguments: arguments)
+        )
         let header = "Content-Length: \(body.count)\r\n\r\n".data(using: .utf8)!
 
         return try await withCheckedThrowingContinuation { cont in
@@ -141,10 +181,9 @@ actor DAPClient {
     private func handleClose() {
         guard !closed else { return }
         closed = true
-        eventContinuation.finish()
-        for (_, cont) in pending {
-            cont.resume(throwing: DAPError.closed)
-        }
+        for (_, cont) in subscribers { cont.finish() }
+        subscribers.removeAll()
+        for (_, cont) in pending { cont.resume(throwing: DAPError.closed) }
         pending.removeAll()
     }
 
@@ -169,7 +208,7 @@ actor DAPClient {
                 }
             }
         case .event(let evt):
-            eventContinuation.yield(evt)
+            for (_, cont) in subscribers { cont.yield(evt) }
         }
     }
 
@@ -186,8 +225,7 @@ actor DAPClient {
         var length: Int?
         for line in headerString.split(separator: "\r\n") {
             if line.hasPrefix("Content-Length:") {
-                let value = line.dropFirst("Content-Length:".count)
-                    .trimmingCharacters(in: .whitespaces)
+                let value = line.dropFirst("Content-Length:".count).trimmingCharacters(in: .whitespaces)
                 length = Int(value)
             }
         }
@@ -196,31 +234,43 @@ actor DAPClient {
         let bodyStart = sepRange.upperBound
         let bodyEnd = bodyStart + length
         guard data.count >= bodyEnd - data.startIndex else { return nil }
-        let body = Data(data[bodyStart..<bodyEnd])
-        return (body, bodyEnd - data.startIndex)
+        return (Data(data[bodyStart..<bodyEnd]), bodyEnd - data.startIndex)
     }
 
     // MARK: - Helpers
 
     private struct EmptyArgs: Encodable, Sendable {}
 
-    private nonisolated static func resolveExecutable() -> String {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        p.arguments = ["--find", "lldb-dap"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            let path = String(decoding: data, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty { return path }
-        } catch {
-            // Fall through to PATH lookup.
-        }
-        return "lldb-dap"
+    private static func resolveExecutable() async -> String {
+        await Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+            p.arguments = ["--find", "lldb-dap"]
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = Pipe()
+            do {
+                try p.run()
+                p.waitUntilExit()
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let path = String(decoding: data, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !path.isEmpty { return path }
+            } catch {
+                // Fall through to PATH lookup.
+            }
+            return "lldb-dap"
+        }.value
     }
+}
+
+// MARK: - Request envelope
+
+/// Single-allocation DAP request envelope. Encodes directly with the typed
+/// arguments — no JSONSerialization round-trip.
+private struct DAPRequestEnvelope<T: Encodable>: Encodable {
+    let seq: Int
+    let type = "request"
+    let command: String
+    let arguments: T
 }

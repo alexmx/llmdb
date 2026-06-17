@@ -45,7 +45,12 @@ public final class Daemon: @unchecked Sendable {
             throw LlmdbError.daemonUnreachable("socket() failed (errno \(errno))")
         }
 
-        try bindUnixSocket(fd: listenFD, path: socketPath)
+        let bindRC = try UnixSocketIO.withSockaddr(path: socketPath) { sptr, len in
+            Darwin.bind(listenFD, sptr, len)
+        }
+        guard bindRC == 0 else {
+            throw LlmdbError.daemonUnreachable("bind(\(socketPath)) failed (errno \(errno))")
+        }
         guard Darwin.listen(listenFD, 16) == 0 else {
             throw LlmdbError.daemonUnreachable("listen() failed (errno \(errno))")
         }
@@ -204,23 +209,3 @@ public final class Daemon: @unchecked Sendable {
     }
 }
 
-private struct RPCResult<T: Encodable>: Encodable {
-    let id: Int
-    let result: T
-}
-
-private struct RPCError: Encodable {
-    let id: Int
-    let error: String
-}
-
-// MARK: - Helpers
-
-private func bindUnixSocket(fd: Int32, path: String) throws {
-    let rc = try UnixSocketIO.withSockaddr(path: path) { sptr, len in
-        Darwin.bind(fd, sptr, len)
-    }
-    guard rc == 0 else {
-        throw LlmdbError.daemonUnreachable("bind(\(path)) failed (errno \(errno))")
-    }
-}

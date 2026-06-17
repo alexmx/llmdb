@@ -1,8 +1,37 @@
 import Foundation
 
-// Parameter and result shapes for `llmdbd`'s JSON-RPC verbs.
-// Shared between the daemon (encodes) and DaemonClient callers (decode).
-// Field names ARE the wire contract — agents depend on them.
+// JSON-RPC wire types for `llmdbd`: the envelope (request/response) and the
+// per-verb parameter and result shapes. Shared between the daemon (server side
+// encodes results) and DaemonClient callers (client side encodes params,
+// decodes results). Field names ARE the wire contract — agents depend on them.
+
+// MARK: - Envelope
+
+struct RPCRequest<P: Encodable & Sendable>: Encodable, Sendable {
+    let id: Int
+    let method: String
+    let params: P
+}
+
+struct RPCResponse<T: Decodable & Sendable>: Decodable, Sendable {
+    let id: Int
+    let result: T?
+    let error: String?
+}
+
+struct EmptyParams: Codable, Sendable {}
+
+/// Server-side success envelope. Generic so we can encode any verb's result.
+struct RPCResult<T: Encodable>: Encodable {
+    let id: Int
+    let result: T
+}
+
+/// Server-side error envelope.
+struct RPCError: Encodable {
+    let id: Int
+    let error: String
+}
 
 // MARK: - Params
 

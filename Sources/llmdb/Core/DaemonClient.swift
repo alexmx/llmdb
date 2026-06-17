@@ -44,10 +44,16 @@ struct DaemonClient: Sendable {
     // MARK: - Connect / auto-spawn
 
     private static func connectOrSpawn() async throws -> Int32 {
-        // Socket exists → try to connect. Surface any connect error directly so
-        // we don't silently re-spawn a daemon that's already up.
+        // Try to connect to an existing daemon. If the socket file is missing
+        // OR it's stale (ECONNREFUSED = no listener bound) — spawn a fresh
+        // daemon and poll until the socket is up.
         if FileManager.default.fileExists(atPath: socketPath) {
-            return try connect()
+            do {
+                return try connect()
+            } catch LlmdbError.daemonUnreachable where errno == ECONNREFUSED {
+                // Stale socket from a dead daemon; unlink and respawn.
+                _ = Darwin.unlink(socketPath)
+            }
         }
         try spawnDaemon()
         let deadline = Date().addingTimeInterval(3)
@@ -97,34 +103,34 @@ struct DaemonClient: Sendable {
 
     // MARK: - I/O helpers
 
+    /// Read a single newline-terminated line. Buffered in 4 KiB chunks; for a
+    /// modest response this is one or two syscalls instead of one per byte.
+    /// The newline itself is consumed and stripped.
     private static func readLine(fd: Int32) throws -> Data {
-        var buffer = Data()
-        var byte: UInt8 = 0
+        var line = Data()
+        var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
-            let n = Darwin.read(fd, &byte, 1)
-            if n < 0 {
-                if errno == EINTR { continue }
-                throw LlmdbError.daemonUnreachable("read failed (errno \(errno))")
+            let n = chunk.withUnsafeMutableBytes { raw -> Int in
+                while true {
+                    let r = Darwin.read(fd, raw.baseAddress, raw.count)
+                    if r < 0 {
+                        if errno == EINTR { continue }
+                        return -Int(errno)
+                    }
+                    return r
+                }
             }
+            if n < 0 { throw LlmdbError.daemonUnreachable("read failed (errno \(-n))") }
             if n == 0 { throw LlmdbError.daemonUnreachable("socket closed before response") }
-            if byte == 0x0A { return buffer }
-            buffer.append(byte)
+            if let nl = chunk[..<n].firstIndex(of: 0x0A) {
+                line.append(contentsOf: chunk[..<nl])
+                // Anything after the newline in this chunk is part of the next
+                // response — but DaemonClient closes the fd after each call,
+                // so there's never a next response on this connection. Discard.
+                return line
+            }
+            line.append(contentsOf: chunk[..<n])
         }
     }
 }
 
-// MARK: - Wire types
-
-private struct RPCRequest<P: Encodable>: Encodable {
-    let id: Int
-    let method: String
-    let params: P
-}
-
-private struct RPCResponse<T: Decodable>: Decodable {
-    let id: Int
-    let result: T?
-    let error: String?
-}
-
-private struct EmptyParams: Encodable, Sendable {}

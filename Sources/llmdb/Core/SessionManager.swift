@@ -3,14 +3,12 @@ import Foundation
 /// Owns the set of live debug sessions. Drives the DAP handshake per session,
 /// tracks the most recent stop event, and exposes the high-level M1 verbs.
 ///
-/// Event fan-out: only the listener Task consumes `DAPClient.events` directly;
-/// per-call waiters subscribe via `subscribe(entryID:)` to receive a buffered
-/// copy. This avoids the classic single-consumer race where the listener and a
-/// waiter compete for the same event.
+/// Event multiplexing lives in `DAPClient` itself — SessionManager just
+/// subscribes to its own listener stream and asks `client.waitForEvent(...)`
+/// for the per-call awaits. No subscriber bookkeeping here.
 actor SessionManager {
 
     private var sessions: [String: SessionEntry] = [:]
-    private var subscribers: [String: [Subscriber]] = [:]
 
     private final class SessionEntry: @unchecked Sendable {
         let id: String
@@ -27,11 +25,6 @@ actor SessionManager {
         }
     }
 
-    private struct Subscriber: Sendable {
-        let id: UUID
-        let continuation: AsyncStream<DAPEvent>.Continuation
-    }
-
     // MARK: - Public API
 
     func list() -> [Session] {
@@ -42,24 +35,21 @@ actor SessionManager {
     /// `break set` calls have a quiescent target.
     func launch(binary: String, args: [String]) async throws -> SessionSnapshot {
         let id = Self.makeID()
-        let client = try DAPClient()
-        let info = Session(
+        let client = try await DAPClient.spawn()
+        let target: Session.Target = .launched(binary: binary, args: args)
+        let entry = SessionEntry(
             id: id,
-            target: .launched(binary: binary, args: args),
-            state: .initializing,
-            stopReason: nil
+            client: client,
+            info: Session(id: id, target: target, state: .initializing, stopReason: nil)
         )
-        let entry = SessionEntry(id: id, client: client, info: info)
         sessions[id] = entry
-
         startListener(entry)
 
         do {
-            try await handshake(entry, launch: true, binary: binary, args: args, pid: nil)
+            try await handshake(entry, target: target)
         } catch {
             await client.terminate()
             sessions.removeValue(forKey: id)
-            subscribers.removeValue(forKey: id)
             throw error
         }
         return snapshot(entry)
@@ -96,16 +86,14 @@ actor SessionManager {
     func continueExecution(sessionId: String?) async throws -> SessionSnapshot {
         let entry = try resolve(sessionId)
         let threadId = entry.stoppedThreadId ?? 1
-        entry.info.state = .running
-        entry.info.stopReason = nil
-
-        // Register the waiter BEFORE sending continue so we don't miss the stop.
-        let waiter = waitForStateChange(entry, timeout: 60)
-        _ = try await entry.client.request(
-            "continue",
-            arguments: ContinueArgs(threadId: threadId)
-        )
-        try await waiter.value
+        // Subscribe BEFORE sending continue so we don't miss the stop.
+        // The listener (not us) writes entry.info.state — by the time the waiter
+        // returns, state has been updated.
+        let waiter = await entry.client.waitForEvent(timeout: 60) {
+            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+        }
+        _ = try await entry.client.request("continue", arguments: ContinueArgs(threadId: threadId))
+        _ = try await waiter.value
         return snapshot(entry)
     }
 
@@ -118,12 +106,8 @@ actor SessionManager {
         guard let tid = threadId ?? entry.stoppedThreadId else {
             throw LlmdbError.dapFailure("no stopped thread; is the session running?")
         }
-        let resp = try await entry.client.request(
-            "stackTrace",
-            arguments: StackTraceArgs(threadId: tid, startFrame: 0, levels: depth ?? 64)
-        )
-        let body = try resp.decodeBody(StackTraceBody.self)
-        return body.stackFrames.map {
+        let frames = try await fetchFrames(entry, threadId: tid, startFrame: 0, levels: depth ?? 64)
+        return frames.map {
             Frame(id: $0.id, name: $0.name, source: $0.source?.path, line: $0.line, column: $0.column)
         }
     }
@@ -133,30 +117,28 @@ actor SessionManager {
         threadId: Int? = nil,
         frameIndex: Int = 0
     ) async throws -> [Local] {
-        let frames = try await backtrace(sessionId: sessionId, threadId: threadId)
-        guard frameIndex >= 0, frameIndex < frames.count else {
-            throw LlmdbError.invalidArgument(
-                name: "frame",
-                value: "\(frameIndex)",
-                valid: (0..<frames.count).map(String.init)
-            )
-        }
         let entry = try resolve(sessionId)
-        let frameId = frames[frameIndex].id
-        let scopesResp = try await entry.client.request(
-            "scopes",
-            arguments: ScopesArgs(frameId: frameId)
-        )
-        let scopes = try scopesResp.decodeBody(ScopesBody.self).scopes
-        guard let localsScope = scopes.first(where: { $0.name == "Locals" }) else {
-            return []
+        guard let tid = threadId ?? entry.stoppedThreadId else {
+            throw LlmdbError.dapFailure("no stopped thread; is the session running?")
         }
+        guard frameIndex >= 0 else {
+            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0+"])
+        }
+        // Fetch just the one frame we need — not the full stack.
+        let frames = try await fetchFrames(entry, threadId: tid, startFrame: frameIndex, levels: 1)
+        guard let frame = frames.first else {
+            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
+        }
+
+        let scopesResp = try await entry.client.request("scopes", arguments: ScopesArgs(frameId: frame.id))
+        let scopes = try scopesResp.decodeBody(ScopesBody.self).scopes
+        guard let localsScope = scopes.first(where: { $0.name == "Locals" }) else { return [] }
+
         let varsResp = try await entry.client.request(
             "variables",
             arguments: VariablesArgs(variablesReference: localsScope.variablesReference)
         )
-        let body = try varsResp.decodeBody(VariablesBody.self)
-        return body.variables.map {
+        return try varsResp.decodeBody(VariablesBody.self).variables.map {
             Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
         }
     }
@@ -167,30 +149,7 @@ actor SessionManager {
         entry.listener?.cancel()
         await entry.client.terminate()
         sessions.removeValue(forKey: entry.id)
-        // Finish any lingering subscribers so their awaiters don't hang.
-        for sub in subscribers[entry.id] ?? [] { sub.continuation.finish() }
-        subscribers.removeValue(forKey: entry.id)
         return true
-    }
-
-    // MARK: - Subscriber fan-out
-
-    /// Create a per-call event subscription for a session. The caller is the
-    /// sole consumer of the returned stream. The stream finishes when the
-    /// session ends.
-    private func subscribe(entryID: String) -> AsyncStream<DAPEvent> {
-        let subID = UUID()
-        var captured: AsyncStream<DAPEvent>.Continuation!
-        let stream = AsyncStream<DAPEvent>(bufferingPolicy: .unbounded) { captured = $0 }
-        captured.onTermination = { @Sendable [weak self] _ in
-            Task { await self?.removeSubscriber(entryID: entryID, subscriberID: subID) }
-        }
-        subscribers[entryID, default: []].append(Subscriber(id: subID, continuation: captured))
-        return stream
-    }
-
-    private func removeSubscriber(entryID: String, subscriberID: UUID) {
-        subscribers[entryID]?.removeAll { $0.id == subscriberID }
     }
 
     // MARK: - Internals
@@ -214,13 +173,20 @@ actor SessionManager {
         )
     }
 
-    private func handshake(
+    private func fetchFrames(
         _ entry: SessionEntry,
-        launch: Bool,
-        binary: String?,
-        args: [String],
-        pid: Int32?
-    ) async throws {
+        threadId: Int,
+        startFrame: Int,
+        levels: Int
+    ) async throws -> [DAPFrame] {
+        let resp = try await entry.client.request(
+            "stackTrace",
+            arguments: StackTraceArgs(threadId: threadId, startFrame: startFrame, levels: levels)
+        )
+        return try resp.decodeBody(StackTraceBody.self).stackFrames
+    }
+
+    private func handshake(_ entry: SessionEntry, target: Session.Target) async throws {
         _ = try await entry.client.request(
             "initialize",
             arguments: InitializeArgs(
@@ -234,36 +200,37 @@ actor SessionManager {
             )
         )
 
-        // Subscribe BEFORE sending launch so we don't miss `initialized`.
-        let initWaiter = waitForEvent(entry, named: "initialized", timeout: 10)
+        // Subscribe BEFORE sending launch/attach so we don't miss `initialized`.
+        let initWaiter = await entry.client.waitForEvent(timeout: 10) { $0.event == "initialized" }
 
-        if launch, let binary {
+        switch target {
+        case .launched(let binary, let args):
             _ = try await entry.client.request(
                 "launch",
                 arguments: LaunchArgs(program: binary, args: args, stopOnEntry: true)
             )
-        } else if let pid {
-            _ = try await entry.client.request(
-                "attach",
-                arguments: AttachArgs(pid: Int(pid))
-            )
-        } else {
-            throw LlmdbError.dapFailure("handshake called with neither launch binary nor pid")
+        case .attached(let pid):
+            _ = try await entry.client.request("attach", arguments: AttachArgs(pid: Int(pid)))
+        case .simulator:
+            throw LlmdbError.notImplemented("simulator attach (M2)")
         }
 
-        try await initWaiter.value
+        _ = try await initWaiter.value
 
-        // After `initialized`, send configurationDone, then wait for the
-        // entry-stop (we asked for stopOnEntry).
-        let stopWaiter = waitForStateChange(entry, timeout: 10)
+        // After `initialized`, send configurationDone; the stopOnEntry stop
+        // arrives shortly after.
+        let stopWaiter = await entry.client.waitForEvent(timeout: 10) {
+            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+        }
         _ = try await entry.client.request("configurationDone")
-        try await stopWaiter.value
+        _ = try await stopWaiter.value
     }
 
     private func startListener(_ entry: SessionEntry) {
         entry.listener = Task { [weak self, weak entry] in
             guard let entry else { return }
-            for await event in entry.client.events {
+            let stream = await entry.client.events()
+            for await event in stream {
                 await self?.handleEvent(event, entryID: entry.id)
             }
             await self?.markTerminated(entryID: entry.id)
@@ -303,172 +270,14 @@ actor SessionManager {
         default:
             break
         }
-        // Fan out to per-call subscribers.
-        for sub in subscribers[entryID] ?? [] {
-            sub.continuation.yield(event)
-        }
     }
 
     private func markTerminated(entryID: String) {
-        guard let entry = sessions[entryID] else { return }
-        entry.info.state = .terminated
-        for sub in subscribers[entryID] ?? [] { sub.continuation.finish() }
-        subscribers.removeValue(forKey: entryID)
-    }
-
-    private func waitForEvent(
-        _ entry: SessionEntry,
-        named: String,
-        timeout: TimeInterval
-    ) -> Task<Void, Error> {
-        waitForEvent(entry, timeout: timeout, label: named) { $0.event == named }
-    }
-
-    private func waitForStateChange(
-        _ entry: SessionEntry,
-        timeout: TimeInterval
-    ) -> Task<Void, Error> {
-        waitForEvent(entry, timeout: timeout, label: "stop/terminate") {
-            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
-        }
-    }
-
-    private func waitForEvent(
-        _ entry: SessionEntry,
-        timeout: TimeInterval,
-        label: String,
-        matching: @escaping @Sendable (DAPEvent) -> Bool
-    ) -> Task<Void, Error> {
-        let stream = subscribe(entryID: entry.id)
-        return Task {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    for await event in stream where matching(event) { return }
-                    throw DAPError.closed
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    throw LlmdbError.dapFailure("timed out waiting for `\(label)` event")
-                }
-                _ = try await group.next()!
-                group.cancelAll()
-            }
-        }
+        sessions[entryID]?.info.state = .terminated
     }
 
     private static func makeID() -> String {
         let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
         return String((0..<6).map { _ in alphabet.randomElement()! })
     }
-}
-
-// MARK: - DAP wire types (private to SessionManager)
-
-private struct InitializeArgs: Encodable, Sendable {
-    let clientID: String
-    let clientName: String
-    let adapterID: String
-    let linesStartAt1: Bool
-    let columnsStartAt1: Bool
-    let pathFormat: String
-    let supportsRunInTerminalRequest: Bool
-}
-
-private struct LaunchArgs: Encodable, Sendable {
-    let program: String
-    let args: [String]
-    let stopOnEntry: Bool
-}
-
-private struct AttachArgs: Encodable, Sendable {
-    let pid: Int
-}
-
-private struct SourceArg: Encodable, Decodable, Sendable {
-    let path: String?
-    let name: String?
-    init(path: String) { self.path = path; self.name = nil }
-}
-
-private struct BPLine: Encodable, Sendable {
-    let line: Int
-}
-
-private struct SetBreakpointsArgs: Encodable, Sendable {
-    let source: SourceArg
-    let breakpoints: [BPLine]
-}
-
-private struct SetBreakpointsBody: Decodable, Sendable {
-    let breakpoints: [DAPBreakpointInfo]
-}
-
-private struct DAPBreakpointInfo: Decodable, Sendable {
-    let id: Int?
-    let verified: Bool
-    let line: Int?
-    let source: SourceArg?
-    let message: String?
-}
-
-private struct BreakpointEventBody: Decodable, Sendable {
-    let reason: String
-    let breakpoint: DAPBreakpointInfo
-}
-
-private struct ContinueArgs: Encodable, Sendable {
-    let threadId: Int
-}
-
-private struct StackTraceArgs: Encodable, Sendable {
-    let threadId: Int
-    let startFrame: Int
-    let levels: Int
-}
-
-private struct StackTraceBody: Decodable, Sendable {
-    let stackFrames: [DAPFrame]
-}
-
-private struct DAPFrame: Decodable, Sendable {
-    let id: Int
-    let name: String
-    let source: SourceArg?
-    let line: Int?
-    let column: Int?
-}
-
-private struct ScopesArgs: Encodable, Sendable {
-    let frameId: Int
-}
-
-private struct ScopesBody: Decodable, Sendable {
-    let scopes: [DAPScope]
-}
-
-private struct DAPScope: Decodable, Sendable {
-    let name: String
-    let variablesReference: Int
-}
-
-private struct VariablesArgs: Encodable, Sendable {
-    let variablesReference: Int
-}
-
-private struct VariablesBody: Decodable, Sendable {
-    let variables: [DAPVariable]
-}
-
-private struct DAPVariable: Decodable, Sendable {
-    let name: String
-    let value: String
-    let type: String?
-    let variablesReference: Int
-}
-
-private struct StoppedEventBody: Decodable, Sendable {
-    let reason: String
-    let threadId: Int?
-    let description: String?
-    let hitBreakpointIds: [Int]?
 }
