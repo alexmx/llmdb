@@ -21,6 +21,11 @@ let package = Package(
                 .product(name: "ToonFormat", package: "toon-swift")
             ]
         ),
+        .executableTarget(
+            name: "llmdb-fixture",
+            dependencies: [],
+            path: "Sources/Fixture"
+        ),
         .testTarget(
             name: "llmdbTests",
             dependencies: ["llmdb"]

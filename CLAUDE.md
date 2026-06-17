@@ -108,8 +108,18 @@ Every verb returns `{session_id, state, stop_reason?, thread?, frame?, ...payloa
 swiftformat .
 ```
 
+## Fixture
+
+`Sources/Fixture/main.swift` builds as the `llmdb-fixture` executable — a deterministic guinea-pig binary used to exercise the debugger from tests and during manual development. Five canonical breakpoint targets are documented at the top of `main.swift`; **do not renumber** without updating the comment (and any tests that reference them).
+
+```bash
+swift build
+swift run llmdb-fixture quick    # exits in <100ms, for launch/break/continue tests
+swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
+```
+
 ## Milestones
 
-- **M1 (current):** daemon + `launch`, `break set`, `continue`, `bt`, `locals` working end-to-end on a Swift Debug build.
+- **M1 (current):** daemon + `launch`, `break set`, `continue`, `bt`, `locals` working end-to-end on the fixture binary.
 - **M2:** the rest of the v0.1 verb surface + iOS Simulator app-id resolver.
 - **M3:** Brew tap + mise + release automation.
