@@ -8,13 +8,17 @@ import Foundation
 /// accepted connection; a client may pipeline many requests, each handled in
 /// the order they arrive.
 ///
-/// Methods (M1):
+/// Methods:
 ///   launch       { binary: String, args: [String] }            → SessionSnapshot
+///   attach       { pid: Int32 }                                → SessionSnapshot
 ///   sessions     {}                                            → [Session]
 ///   break.set    { sessionId?: String, file: String, line: Int } → { snapshot, breakpoint }
 ///   continue     { sessionId?: String }                        → SessionSnapshot
-///   bt           { sessionId?: String, depth?: Int }           → { snapshot, frames }
-///   locals       { sessionId?: String, frame?: Int }           → { snapshot, locals }
+///   interrupt    { sessionId?: String }                        → SessionSnapshot
+///   step         { sessionId?: String, granularity: in|over|out } → SessionSnapshot
+///   bt           { sessionId?: String, depth?: Int }           → { frames }
+///   locals       { sessionId?: String, frame?: Int }           → { locals }
+///   threads      { sessionId?: String }                        → { threads }
 ///   stop         { sessionId?: String }                        → { ok: true }
 public final class Daemon: @unchecked Sendable {
 
@@ -151,6 +155,11 @@ public final class Daemon: @unchecked Sendable {
                 let snap = try await manager.launch(binary: p.binary, args: p.args ?? [])
                 return encodeOK(id: requestID, result: snap)
 
+            case "attach":
+                let p = try JSONDecoder().decode(AttachParams.self, from: paramsData)
+                let snap = try await manager.attach(pid: p.pid)
+                return encodeOK(id: requestID, result: snap)
+
             case "sessions":
                 let list = await manager.list()
                 return encodeOK(id: requestID, result: list)
@@ -167,6 +176,16 @@ public final class Daemon: @unchecked Sendable {
                 let snap = try await manager.continueExecution(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: snap)
 
+            case "interrupt":
+                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let snap = try await manager.interrupt(sessionId: p.sessionId)
+                return encodeOK(id: requestID, result: snap)
+
+            case "step":
+                let p = try JSONDecoder().decode(StepParams.self, from: paramsData)
+                let snap = try await manager.step(sessionId: p.sessionId, granularity: p.granularity)
+                return encodeOK(id: requestID, result: snap)
+
             case "bt":
                 let p = try JSONDecoder().decode(BtParams.self, from: paramsData)
                 let frames = try await manager.backtrace(
@@ -180,6 +199,11 @@ public final class Daemon: @unchecked Sendable {
                     sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0
                 )
                 return encodeOK(id: requestID, result: LocalsResult(locals: locals))
+
+            case "threads":
+                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let ts = try await manager.threads(sessionId: p.sessionId)
+                return encodeOK(id: requestID, result: ThreadsResult(threads: ts))
 
             case "stop":
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)

@@ -15,9 +15,12 @@ struct Llmdb: AsyncParsableCommand {
             BreakCommand.self,
             // Execution
             ContinueCommand.self,
+            StepCommand.self,
+            InterruptCommand.self,
             // Inspection
             BacktraceCommand.self,
             LocalsCommand.self,
+            ThreadsCommand.self,
             // System
             DaemonCommand.self,
             DoctorCommand.self,

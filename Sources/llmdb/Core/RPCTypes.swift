@@ -33,11 +33,31 @@ struct RPCError: Encodable {
     let error: String
 }
 
+// MARK: - Step granularity
+
+/// Single source-line step direction. Codable as a lowercase string so the
+/// wire shape stays human-friendly.
+enum StepGranularity: String, Codable, Sendable {
+    case over, `in`, out
+
+    var dapCommand: String {
+        switch self {
+        case .over: "next"
+        case .in:   "stepIn"
+        case .out:  "stepOut"
+        }
+    }
+}
+
 // MARK: - Params
 
 struct LaunchParams: Codable, Sendable {
     let binary: String
     let args: [String]?
+}
+
+struct AttachParams: Codable, Sendable {
+    let pid: Int32
 }
 
 struct SessionParams: Codable, Sendable {
@@ -62,6 +82,11 @@ struct LocalsParams: Codable, Sendable {
     let frame: Int?
 }
 
+struct StepParams: Codable, Sendable {
+    let sessionId: String?
+    let granularity: StepGranularity
+}
+
 // MARK: - Results
 
 struct BreakSetResult: Codable, Sendable {
@@ -75,6 +100,10 @@ struct BacktraceResult: Codable, Sendable {
 
 struct LocalsResult: Codable, Sendable {
     let locals: [Local]
+}
+
+struct ThreadsResult: Codable, Sendable {
+    let threads: [Thread]
 }
 
 struct StopResult: Codable, Sendable {

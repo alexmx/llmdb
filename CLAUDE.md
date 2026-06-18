@@ -67,23 +67,25 @@ mise use --global github:alexmx/llmdb
 All commands accept `--format json|toon|plain` (default JSON, matching agent-first orientation).
 
 ### Lifecycle
-- **launch** — Launch a binary under `lldb-dap`. Returns `session_id`.
-- **attach** — Attach by `--pid` or `--app <bundle-id>` (Simulator resolved via `xcrun simctl`).
+- **launch** — Launch a binary under `lldb-dap`. Stops on entry; returns `sessionId`, `state`, `stopReason`.
+- **attach** — Attach to a running process by `--pid`. lldb-dap pauses on attach. `--app <bundle-id>` (Simulator) deferred to a later slice.
 - **stop** — Detach/terminate a session.
 - **sessions** — List active sessions.
 
 ### Breakpoints
-- **break set** — `<file>:<line>` or `--symbol <name>` or `--regex <pattern>`.
-- **break list** / **break delete**.
+- **break set** — `<file>:<line>`. `--symbol`/`--regex` and `break list`/`break delete` deferred.
 
 ### Execution
-- **continue**, **step** (`--in`/`--over`/`--out`), **run-until** (set bp + continue + wait for hit), **interrupt**.
+- **continue** — Resume until next stop.
+- **step** — `--in` / `--over` (default) / `--out`.
+- **interrupt** — Pause a running session.
+- **run-until** — deferred.
 
 ### Inspection
 - **bt** — Structured backtrace (`--thread`, `--depth`).
 - **locals** — Typed locals for a frame.
-- **expr** — Evaluate an expression in the current frame.
-- **threads** — List threads with state.
+- **threads** — List threads.
+- **expr** — deferred.
 
 ### System
 - **daemon** — Run the background daemon (normally auto-spawned).
@@ -120,6 +122,6 @@ swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
 
 ## Milestones
 
-- **M1 (current):** daemon + `launch`, `break set`, `continue`, `bt`, `locals` working end-to-end on the fixture binary.
-- **M2:** the rest of the v0.1 verb surface + iOS Simulator app-id resolver.
+- **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
+- **M2 (current):** attach flow shipped (`attach`, `interrupt`, `threads`, `step`). Remaining: `run-until`, `expr`, `break list/delete`, iOS Simulator app-id resolver.
 - **M3:** Brew tap + mise + release automation.

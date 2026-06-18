@@ -201,9 +201,18 @@ actor DAPClient {
                 if resp.success {
                     cont.resume(returning: resp)
                 } else {
+                    // Surface the raw body too — lldb-dap often puts the real
+                    // error in body.error.format rather than the top-level message.
+                    var msgText = resp.message ?? "request failed"
+                    if let body = resp.body,
+                       let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                       let err = obj["error"] as? [String: Any],
+                       let fmt = err["format"] as? String {
+                        msgText = fmt
+                    }
                     cont.resume(throwing: DAPError.responseError(
                         command: resp.command,
-                        message: resp.message ?? "request failed"
+                        message: msgText
                     ))
                 }
             }

@@ -6,7 +6,7 @@ A macOS CLI tool and MCP server that wraps `lldb-dap` to give AI agents a struct
 
 ## Status
 
-Pre-alpha scaffold. M1 (launch + break + continue + bt + locals end-to-end) is in progress.
+Pre-alpha. M1 done (launch + break + continue + bt + locals). M2 in progress — attach flow shipped (`attach`, `interrupt`, `threads`, `step`); `run-until`, `expr`, `break list/delete`, iOS Simulator resolver still to land.
 
 ## Install
 

@@ -34,9 +34,20 @@ actor SessionManager {
     /// Launch a binary under lldb-dap. Stops on entry so subsequent
     /// `break set` calls have a quiescent target.
     func launch(binary: String, args: [String]) async throws -> SessionSnapshot {
+        try await openSession(target: .launched(binary: binary, args: args))
+    }
+
+    /// Attach to a running process. lldb-dap pauses the target on attach,
+    /// so the returned snapshot is `.stopped`.
+    func attach(pid: Int32) async throws -> SessionSnapshot {
+        try await openSession(target: .attached(pid: pid))
+    }
+
+    /// Common path for launch/attach: open a DAPClient, run the handshake,
+    /// register the session (or roll back on failure).
+    private func openSession(target: Session.Target) async throws -> SessionSnapshot {
         let id = Self.makeID()
         let client = try await DAPClient.spawn()
-        let target: Session.Target = .launched(binary: binary, args: args)
         let entry = SessionEntry(
             id: id,
             client: client,
@@ -84,17 +95,46 @@ actor SessionManager {
     }
 
     func continueExecution(sessionId: String?) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: "continue", timeout: 60)
+    }
+
+    /// Pause a running session. Returns once the target is stopped.
+    func interrupt(sessionId: String?) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: "pause", timeout: 10)
+    }
+
+    /// Step one source line. `granularity` picks the DAP command:
+    /// `.over` → next, `.in` → stepIn, `.out` → stepOut.
+    func step(sessionId: String?, granularity: StepGranularity) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: granularity.dapCommand, timeout: 30)
+    }
+
+    /// Send a single-thread execution command (continue/pause/next/stepIn/stepOut)
+    /// and return when the next stop / termination event arrives.
+    private func runUntilStop(
+        sessionId: String?,
+        command: String,
+        timeout: TimeInterval
+    ) async throws -> SessionSnapshot {
         let entry = try resolve(sessionId)
         let threadId = entry.stoppedThreadId ?? 1
-        // Subscribe BEFORE sending continue so we don't miss the stop.
-        // The listener (not us) writes entry.info.state — by the time the waiter
+        // Subscribe BEFORE sending the request so we don't miss the stop.
+        // The listener writes entry.info.state — by the time the waiter
         // returns, state has been updated.
-        let waiter = await entry.client.waitForEvent(timeout: 60) {
+        let waiter = await entry.client.waitForEvent(timeout: timeout) {
             $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
         }
-        _ = try await entry.client.request("continue", arguments: ContinueArgs(threadId: threadId))
+        _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
         _ = try await waiter.value
         return snapshot(entry)
+    }
+
+    func threads(sessionId: String?) async throws -> [Thread] {
+        let entry = try resolve(sessionId)
+        let resp = try await entry.client.request("threads")
+        return try resp.decodeBody(ThreadsBody.self).threads.map {
+            Thread(id: $0.id, name: $0.name)
+        }
     }
 
     func backtrace(
@@ -187,6 +227,11 @@ actor SessionManager {
     }
 
     private func handshake(_ entry: SessionEntry, target: Session.Target) async throws {
+        // Subscribe to `initialized` BEFORE sending the initialize request.
+        // lldb-dap can emit it right after the initialize response, before
+        // launch/attach is sent — subscribing later races and loses.
+        let initWaiter = await entry.client.waitForEvent(timeout: 10) { $0.event == "initialized" }
+
         _ = try await entry.client.request(
             "initialize",
             arguments: InitializeArgs(
@@ -200,9 +245,6 @@ actor SessionManager {
             )
         )
 
-        // Subscribe BEFORE sending launch/attach so we don't miss `initialized`.
-        let initWaiter = await entry.client.waitForEvent(timeout: 10) { $0.event == "initialized" }
-
         switch target {
         case .launched(let binary, let args):
             _ = try await entry.client.request(
@@ -210,7 +252,10 @@ actor SessionManager {
                 arguments: LaunchArgs(program: binary, args: args, stopOnEntry: true)
             )
         case .attached(let pid):
-            _ = try await entry.client.request("attach", arguments: AttachArgs(pid: Int(pid)))
+            _ = try await entry.client.request(
+                "attach",
+                arguments: AttachArgs(pid: Int(pid), stopOnEntry: true)
+            )
         case .simulator:
             throw LlmdbError.notImplemented("simulator attach (M2)")
         }

@@ -29,6 +29,10 @@ struct LaunchArgs: Encodable, Sendable {
 
 struct AttachArgs: Encodable, Sendable {
     let pid: Int
+    /// Pause the target on attach. Without this, lldb-dap may detach almost
+    /// immediately after `configurationDone` (it considers the session
+    /// "complete" with nothing to do).
+    let stopOnEntry: Bool
 }
 
 // MARK: - Breakpoints
@@ -67,15 +71,31 @@ struct BreakpointEventBody: Decodable, Sendable {
 
 // MARK: - Execution
 
-struct ContinueArgs: Encodable, Sendable {
+/// Used by `continue`, `pause`, `next`, `stepIn`, `stepOut` — all DAP commands
+/// that target a single thread with no other parameters.
+struct ThreadIdArgs: Encodable, Sendable {
     let threadId: Int
 }
+
+/// Alias for readability at call sites. (Same shape.)
+typealias ContinueArgs = ThreadIdArgs
 
 struct StoppedEventBody: Decodable, Sendable {
     let reason: String
     let threadId: Int?
     let description: String?
     let hitBreakpointIds: [Int]?
+}
+
+// MARK: - Threads
+
+struct ThreadsBody: Decodable, Sendable {
+    let threads: [DAPThread]
+}
+
+struct DAPThread: Decodable, Sendable {
+    let id: Int
+    let name: String
 }
 
 // MARK: - Stack / Scopes / Variables
