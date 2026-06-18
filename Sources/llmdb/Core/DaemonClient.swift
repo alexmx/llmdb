@@ -5,7 +5,9 @@ import Foundation
 /// newline-delimited JSON-RPC requests, returns decoded responses.
 /// Auto-spawns `llmdb daemon` if the socket is absent.
 enum DaemonClient {
-    static let socketPath: String = Daemon.defaultSocketPath
+    /// Re-reads `Daemon.defaultSocketPath` per call so it honors
+    /// `LLMDB_SOCKET_PATH` even when the env var is set after import.
+    static var socketPath: String { Daemon.defaultSocketPath }
 
     /// Call a method on the daemon. Auto-spawns the daemon on first use.
     static func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(

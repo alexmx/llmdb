@@ -40,7 +40,7 @@ llmdb locals
    └──────────────┘
 ```
 
-- `llmdb daemon` runs the background process that owns active debug sessions.
+- `llmdb daemon` runs the background process that owns active debug sessions. Socket lives at `~/Library/Caches/llmdb/llmdbd.sock`; set `LLMDB_SOCKET_PATH=…` in an agent's environment to give it an isolated daemon (handy when two MCP agents shouldn't share sessions).
 - The CLI and MCP server are both thin clients; first invocation auto-spawns the daemon.
 - Each session backs onto its own `lldb-dap` child process.
 

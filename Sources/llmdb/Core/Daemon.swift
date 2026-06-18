@@ -27,7 +27,18 @@ import Foundation
 ///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
 ///   stop          { sessionId? }                                → { ok: true }
 public final class Daemon: @unchecked Sendable {
+    /// Where the daemon binds and where clients connect. Default is
+    /// `~/Library/Caches/llmdb/llmdbd.sock`; override via the
+    /// `LLMDB_SOCKET_PATH` env var when you need isolated daemons (e.g.,
+    /// two MCP-driven agents that shouldn't share sessions).
+    ///
+    /// The CLI's auto-spawn inherits the parent's environment, so a child
+    /// daemon picks up the same path automatically — no extra plumbing.
     public static var defaultSocketPath: String {
+        if let override = ProcessInfo.processInfo.environment["LLMDB_SOCKET_PATH"],
+           !override.isEmpty {
+            return override
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent("Library/Caches/llmdb/llmdbd.sock").path
     }

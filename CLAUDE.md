@@ -38,7 +38,7 @@ swift run llmdb <command> [options]
 
 ## Architecture
 
-- **`llmdb daemon`** runs the background process. Lives at `~/Library/Caches/llmdb/llmdbd.sock`. Owns the set of active debug sessions and their `lldb-dap` children.
+- **`llmdb daemon`** runs the background process. Lives at `~/Library/Caches/llmdb/llmdbd.sock` by default; override with `LLMDB_SOCKET_PATH=…` for isolated daemons (e.g., two MCP-driven agents that shouldn't share sessions — set a distinct path in each agent's environment and they each get their own daemon, with full session/state isolation). Owns the set of active debug sessions and their `lldb-dap` children.
 - **CLI commands** auto-spawn the daemon on first use, then JSON-RPC over the socket. Pass `--session <id>` when multiple are active.
 - **`llmdb mcp`** is another client of the daemon (or embeds the same Core directly — TBD).
 - **`Core/DAPClient`** speaks Debug Adapter Protocol (Content-Length-framed JSON over stdio) to `lldb-dap`.
