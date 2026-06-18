@@ -4,8 +4,7 @@ import Foundation
 /// CLI-side client for `llmdbd`. Connects to the Unix socket, sends
 /// newline-delimited JSON-RPC requests, returns decoded responses.
 /// Auto-spawns `llmdb daemon` if the socket is absent.
-struct DaemonClient: Sendable {
-
+enum DaemonClient {
     static let socketPath: String = Daemon.defaultSocketPath
 
     /// Call a method on the daemon. Auto-spawns the daemon on first use.
@@ -134,4 +133,3 @@ struct DaemonClient: Sendable {
         }
     }
 }
-

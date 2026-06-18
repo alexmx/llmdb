@@ -1,11 +1,10 @@
 import Foundation
-import Testing
 @testable import llmdb
+import Testing
 
 @Suite("SessionManager against llmdb-fixture")
 struct SessionManagerIntegrationTests {
-
-    @Test("launch + break + continue + bt + locals end-to-end")
+    @Test
     func endToEnd() async throws {
         let paths = try fixturePaths()
         let manager = SessionManager()
@@ -40,7 +39,9 @@ struct SessionManagerIntegrationTests {
         // 5. locals
         let locals = try await manager.locals(sessionId: sessionID)
         var values: [String: String] = [:]
-        for l in locals { values[l.name] = l.value }
+        for l in locals {
+            values[l.name] = l.value
+        }
         #expect(values["x"] == "3")
         #expect(values["y"] == "4")
         #expect(values["sum"] == "7")
@@ -57,7 +58,7 @@ struct SessionManagerIntegrationTests {
         let totalExpr = try await manager.evaluate(sessionId: sessionID, expression: "total")
         #expect(totalExpr.value == "20")
         let sumPlusDiff = try await manager.evaluate(sessionId: sessionID, expression: "sum + diff")
-        #expect(sumPlusDiff.value == "8")  // 7 + 1
+        #expect(sumPlusDiff.value == "8") // 7 + 1
 
         // 8. break list / break delete round-trip
         let beforeDelete = try await manager.listBreakpoints(sessionId: sessionID)
@@ -81,7 +82,7 @@ struct SessionManagerIntegrationTests {
         #expect(await manager.list().isEmpty)
     }
 
-    @Test("run-until composes break.set + continue in one call")
+    @Test
     func runUntilCompositeVerb() async throws {
         let paths = try fixturePaths()
         let manager = SessionManager()
@@ -105,7 +106,7 @@ struct SessionManagerIntegrationTests {
         _ = try await manager.stop(sessionId: launchSnap.sessionId)
     }
 
-    @Test("attach to a running process + interrupt + stop")
+    @Test
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()
 
@@ -128,7 +129,7 @@ struct SessionManagerIntegrationTests {
 
         let manager = SessionManager()
         let attachSnap = try await manager.attach(pid: pid)
-        #expect(attachSnap.state == .stopped)  // lldb-dap pauses on attach
+        #expect(attachSnap.state == .stopped) // lldb-dap pauses on attach
 
         // threads should report at least the main thread
         let threads = try await manager.threads(sessionId: attachSnap.sessionId)
@@ -176,7 +177,12 @@ struct SessionManagerIntegrationTests {
 
     struct Skip: Error, CustomStringConvertible {
         let message: String
-        init(_ m: String) { self.message = m }
-        var description: String { message }
+        init(_ m: String) {
+            self.message = m
+        }
+
+        var description: String {
+            message
+        }
     }
 }

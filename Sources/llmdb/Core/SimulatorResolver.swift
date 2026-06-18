@@ -10,7 +10,6 @@ import Foundation
 /// 3. read `CFBundleExecutable` from the bundle's Info.plist → binary name
 /// 4. `pgrep -f "<UDID>.*<binaryName>"` → host PID
 enum SimulatorResolver {
-
     /// Resolve a bundle ID to a host PID. Throws clear, actionable errors
     /// when no sim is booted / the app isn't installed / the app isn't running.
     static func resolvePID(bundleID: String) async throws -> Int32 {
@@ -99,6 +98,12 @@ enum SimulatorResolver {
 
     /// Run a command and return its stdout. Throws on non-zero exit.
     /// Detached so the blocking `Process` doesn't park an actor's executor.
+    ///
+    /// Note: `standardError` is wired to a `Pipe()` but never drained. If a
+    /// callee ever started writing more than ~64 KiB to stderr it could block
+    /// on the full pipe. All current callees (`xcrun simctl`, `pgrep`) are
+    /// nearly silent on stderr, so we don't pay the cost of a second read loop.
+    /// If we add a chattier callee, drain stderr alongside stdout.
     private static func runStdout(_ command: [String]) async throws -> Data {
         try await Task.detached {
             let proc = Process()

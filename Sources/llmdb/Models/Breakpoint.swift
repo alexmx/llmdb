@@ -1,6 +1,6 @@
 import Foundation
 
-struct Breakpoint: Codable, Sendable {
+struct Breakpoint: Codable {
     let id: Int
     let verified: Bool
     let line: Int?

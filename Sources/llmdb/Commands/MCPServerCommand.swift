@@ -29,7 +29,7 @@ struct MCPServerCommand: AsyncParsableCommand {
     private func printSetup() {
         print("""
         Add llmdb as an MCP server to your AI coding agent:
-
+        
           Claude Code:          claude mcp add --transport stdio llmdb -- llmdb mcp
           Codex CLI:            codex mcp add llmdb -- llmdb mcp
           VS Code / Copilot:    code --add-mcp '{"name":"llmdb","command":"llmdb","args":["mcp"]}'

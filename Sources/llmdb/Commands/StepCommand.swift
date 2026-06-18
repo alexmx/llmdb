@@ -7,14 +7,11 @@ struct StepCommand: AsyncParsableCommand {
         abstract: "Step one source line; default --over"
     )
 
-    @Flag(name: .long, help: "Step into a call")
-    var `in` = false
-
-    @Flag(name: .long, help: "Step over a call (default)")
-    var over = false
-
-    @Flag(name: .long, help: "Step out of the current frame")
-    var out = false
+    /// `EnumerableFlag` exposes one CLI flag per case (`--over`, `--in`, `--out`)
+    /// and enforces mutual exclusivity for free. Per-flag help text lives in
+    /// the extension below so the conformance stays close to the CLI usage.
+    @Flag(exclusivity: .exclusive)
+    var granularity: StepGranularity = .over
 
     @Option(name: .long, help: "Session ID")
     var session: String?
@@ -22,27 +19,23 @@ struct StepCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Output format")
     var format: OutputFormat = .default
 
-    func validate() throws {
-        let count = [`in`, over, out].filter { $0 }.count
-        if count > 1 {
-            throw ValidationError("pass at most one of --in / --over / --out")
-        }
-    }
-
     func run() async throws {
-        let granularity: StepGranularity
-        if `in` {
-            granularity = .in
-        } else if out {
-            granularity = .out
-        } else {
-            granularity = .over  // default
-        }
         let snap = try await DaemonClient.call(
             method: "step",
             params: StepParams(sessionId: session, granularity: granularity),
             as: SessionSnapshot.self
         )
         try JSONOutput.print(snap)
+    }
+}
+
+extension StepGranularity {
+    /// Per-flag descriptions shown in `llmdb step --help`.
+    public static func help(for value: Self) -> ArgumentHelp? {
+        switch value {
+        case .over: "Step over a call (default)"
+        case .in:   "Step into a call"
+        case .out:  "Step out of the current frame"
+        }
     }
 }

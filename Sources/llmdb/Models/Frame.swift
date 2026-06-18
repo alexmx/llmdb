@@ -1,6 +1,6 @@
 import Foundation
 
-struct Frame: Codable, Sendable {
+struct Frame: Codable {
     let id: Int
     let name: String
     let source: String?
@@ -8,7 +8,7 @@ struct Frame: Codable, Sendable {
     let column: Int?
 }
 
-struct Local: Codable, Sendable {
+struct Local: Codable {
     let name: String
     let type: String?
     let value: String

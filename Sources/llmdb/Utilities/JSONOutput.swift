@@ -9,6 +9,6 @@ enum JSONOutput {
     }
 
     static func print<T: Encodable>(_ value: T) throws {
-        Swift.print(try encode(value))
+        try Swift.print(encode(value))
     }
 }

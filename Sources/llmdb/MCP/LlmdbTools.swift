@@ -25,7 +25,9 @@ enum LlmdbTools {
     struct AttachToolArgs: MCPToolInput {
         @InputProperty("Process ID to attach to (mutually exclusive with `app`)")
         var pid: Int?
-        @InputProperty("Bundle ID of an app running in the booted iOS Simulator — resolved via xcrun simctl (mutually exclusive with `pid`)")
+        @InputProperty(
+            "Bundle ID of an app running in the booted iOS Simulator — resolved via xcrun simctl (mutually exclusive with `pid`)"
+        )
         var app: String?
     }
 
@@ -142,8 +144,8 @@ enum LlmdbTools {
     ) { (args: BreakSetToolArgs) in
         try await callJSON(
             "run-until",
-            RunUntilParams(sessionId: args.session_id, file: args.file, line: args.line),
-            RunUntilResult.self
+            BreakSetParams(sessionId: args.session_id, file: args.file, line: args.line),
+            BreakSetResult.self
         )
     }
 

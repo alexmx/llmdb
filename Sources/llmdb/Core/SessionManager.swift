@@ -7,7 +7,6 @@ import Foundation
 /// subscribes to its own listener stream and asks `client.waitForEvent(...)`
 /// for the per-call awaits. No subscriber bookkeeping here.
 actor SessionManager {
-
     private var sessions: [String: SessionEntry] = [:]
 
     private final class SessionEntry: @unchecked Sendable {

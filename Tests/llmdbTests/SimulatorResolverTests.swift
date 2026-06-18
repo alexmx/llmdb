@@ -1,13 +1,12 @@
 import Foundation
-import Testing
 @testable import llmdb
+import Testing
 
 @Suite("SimulatorResolver")
 struct SimulatorResolverTests {
-
     // MARK: - parseBootedUDID
 
-    @Test("parseBootedUDID picks the first Booted device")
+    @Test
     func picksBootedDevice() throws {
         let json = #"""
         {
@@ -23,7 +22,7 @@ struct SimulatorResolverTests {
         #expect(udid == "ACTIVE-1")
     }
 
-    @Test("parseBootedUDID throws when nothing is booted")
+    @Test
     func throwsWhenNoneBooted() {
         let json = #"""
         { "devices": { "com.apple.CoreSimulator.SimRuntime.iOS-17-0": [] } }
@@ -33,7 +32,7 @@ struct SimulatorResolverTests {
         }
     }
 
-    @Test("parseBootedUDID throws on shape mismatch")
+    @Test
     func throwsOnShapeMismatch() {
         let json = #"{ "wrong": true }"#.data(using: .utf8)!
         #expect(throws: LlmdbError.self) {
@@ -43,7 +42,7 @@ struct SimulatorResolverTests {
 
     // MARK: - parseBundleExecutable
 
-    @Test("parseBundleExecutable reads CFBundleExecutable from a plist")
+    @Test
     func readsCFBundleExecutable() throws {
         let plist: [String: Any] = [
             "CFBundleExecutable": "MyApp",
@@ -56,7 +55,7 @@ struct SimulatorResolverTests {
         #expect(exe == "MyApp")
     }
 
-    @Test("parseBundleExecutable throws when CFBundleExecutable is missing")
+    @Test
     func throwsOnMissingKey() throws {
         let data = try PropertyListSerialization.data(
             fromPropertyList: ["CFBundleIdentifier": "x"], format: .binary, options: 0
@@ -68,7 +67,7 @@ struct SimulatorResolverTests {
 
     // MARK: - Integration (skips when no sim is booted)
 
-    @Test("bootedDeviceUDID reports a real UDID or skips cleanly")
+    @Test
     func bootedDeviceUDIDOrSkip() async throws {
         do {
             let udid = try await SimulatorResolver.bootedDeviceUDID()

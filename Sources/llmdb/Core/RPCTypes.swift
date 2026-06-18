@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 
 // JSON-RPC wire types for `llmdbd`: the envelope (request/response) and the
@@ -7,19 +8,19 @@ import Foundation
 
 // MARK: - Envelope
 
-struct RPCRequest<P: Encodable & Sendable>: Encodable, Sendable {
+struct RPCRequest<P: Encodable & Sendable>: Encodable {
     let id: Int
     let method: String
     let params: P
 }
 
-struct RPCResponse<T: Decodable & Sendable>: Decodable, Sendable {
+struct RPCResponse<T: Decodable & Sendable>: Decodable {
     let id: Int
     let result: T?
     let error: String?
 }
 
-struct EmptyParams: Codable, Sendable {}
+struct EmptyParams: Codable {}
 
 /// Server-side success envelope. Generic so we can encode any verb's result.
 struct RPCResult<T: Encodable>: Encodable {
@@ -36,105 +37,101 @@ struct RPCError: Encodable {
 // MARK: - Step granularity
 
 /// Single source-line step direction. Codable as a lowercase string so the
-/// wire shape stays human-friendly.
-enum StepGranularity: String, Codable, Sendable {
+/// wire shape stays human-friendly; `EnumerableFlag` so the CLI exposes
+/// `--over` / `--in` / `--out` without a manual three-flag dance.
+enum StepGranularity: String, Codable, EnumerableFlag {
     case over, `in`, out
 
     var dapCommand: String {
         switch self {
         case .over: "next"
-        case .in:   "stepIn"
-        case .out:  "stepOut"
+        case .in: "stepIn"
+        case .out: "stepOut"
         }
     }
 }
 
 // MARK: - Params
 
-struct LaunchParams: Codable, Sendable {
+struct LaunchParams: Codable {
     let binary: String
     let args: [String]?
 }
 
 /// Attach by PID OR by iOS Simulator bundle ID. Exactly one must be set.
-struct AttachParams: Codable, Sendable {
+struct AttachParams: Codable {
     let pid: Int32?
     let app: String?
 }
 
-struct SessionParams: Codable, Sendable {
+struct SessionParams: Codable {
     let sessionId: String?
 }
 
-struct BreakSetParams: Codable, Sendable {
+/// Used by both `break.set` and `run-until` (the latter = set BP + continue).
+struct BreakSetParams: Codable {
     let sessionId: String?
     let file: String
     let line: Int
 }
 
-/// `run-until` uses the same shape as `break.set` — set a BP and continue.
-typealias RunUntilParams = BreakSetParams
-
-/// Same shape as BreakSetResult: post-continue snapshot + the BP that was set.
-typealias RunUntilResult = BreakSetResult
-
-struct BtParams: Codable, Sendable {
+struct BtParams: Codable {
     let sessionId: String?
     let threadId: Int?
     let depth: Int?
 }
 
-struct LocalsParams: Codable, Sendable {
+struct LocalsParams: Codable {
     let sessionId: String?
     let threadId: Int?
     let frame: Int?
 }
 
-struct StepParams: Codable, Sendable {
+struct StepParams: Codable {
     let sessionId: String?
     let granularity: StepGranularity
 }
 
-struct ExprParams: Codable, Sendable {
+struct ExprParams: Codable {
     let sessionId: String?
     let expression: String
     let frame: Int?
 }
 
-struct BreakDeleteParams: Codable, Sendable {
+struct BreakDeleteParams: Codable {
     let sessionId: String?
     let id: Int
 }
 
 // MARK: - Results
 
-struct BreakSetResult: Codable, Sendable {
+struct BreakSetResult: Codable {
     let snapshot: SessionSnapshot
     let breakpoint: Breakpoint
 }
 
-struct BacktraceResult: Codable, Sendable {
+struct BacktraceResult: Codable {
     let frames: [Frame]
 }
 
-struct LocalsResult: Codable, Sendable {
+struct LocalsResult: Codable {
     let locals: [Local]
 }
 
-struct ThreadsResult: Codable, Sendable {
+struct ThreadsResult: Codable {
     let threads: [Thread]
 }
 
-struct ExprResult: Codable, Sendable {
+struct ExprResult: Codable {
     let value: String
     let type: String?
     let variablesReference: Int
 }
 
-struct BreakListResult: Codable, Sendable {
+struct BreakListResult: Codable {
     let breakpoints: [Breakpoint]
 }
 
-struct StopResult: Codable, Sendable {
+struct StopResult: Codable {
     let ok: Bool
 }

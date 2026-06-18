@@ -4,7 +4,6 @@ import Foundation
 /// Shared POSIX bits for `llmdbd`'s newline-delimited JSON socket.
 /// Used by both the daemon (server side) and DaemonClient (client side).
 enum UnixSocketIO {
-
     /// Run `body` against a populated `sockaddr_un` for `path`. Throws if the
     /// path is too long for `sun_path`.
     static func withSockaddr<R>(
@@ -21,7 +20,9 @@ enum UnixSocketIO {
                     "socket path too long (\(pathBytes.count) > \(dst.count)): \(path)"
                 )
             }
-            for (i, b) in pathBytes.enumerated() { dst[i] = Int8(bitPattern: b) }
+            for (i, b) in pathBytes.enumerated() {
+                dst[i] = Int8(bitPattern: b)
+            }
         }
         let len = socklen_t(MemoryLayout<sockaddr_un>.size)
         return try withUnsafePointer(to: &addr) { ptr in

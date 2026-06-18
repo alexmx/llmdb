@@ -1,6 +1,6 @@
 import Foundation
 
-enum DAPError: Error, Sendable, CustomStringConvertible {
+enum DAPError: Error, CustomStringConvertible {
     case parseFailed(String)
     case missingBody
     case unexpectedMessageType(String)
@@ -23,7 +23,7 @@ enum DAPError: Error, Sendable, CustomStringConvertible {
 /// A parsed DAP response. The `body` field is retained as raw JSON so consumers
 /// can decode it into typed shapes on demand without DAPClient needing to know
 /// every command's response schema.
-struct DAPResponse: Sendable {
+struct DAPResponse {
     let seq: Int
     let requestSeq: Int
     let success: Bool
@@ -40,7 +40,7 @@ struct DAPResponse: Sendable {
 /// A parsed DAP event (`stopped`, `output`, `terminated`, `breakpoint`,
 /// `module`, etc.). Body is retained as raw JSON for the same reason as
 /// `DAPResponse`.
-struct DAPEvent: Sendable {
+struct DAPEvent {
     let seq: Int
     let event: String
     let body: Data?
@@ -51,7 +51,7 @@ struct DAPEvent: Sendable {
     }
 }
 
-enum DAPMessage: Sendable {
+enum DAPMessage {
     case response(DAPResponse)
     case event(DAPEvent)
 

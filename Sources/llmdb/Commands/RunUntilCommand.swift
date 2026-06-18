@@ -17,24 +17,12 @@ struct RunUntilCommand: AsyncParsableCommand {
     var format: OutputFormat = .default
 
     func run() async throws {
-        let (file, line) = try parseLocation(location)
-        let absolute = (file as NSString).isAbsolutePath
-            ? file
-            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(file)
+        let (file, line) = try parseFileLineLocation(location)
         let result = try await DaemonClient.call(
             method: "run-until",
-            params: RunUntilParams(sessionId: session, file: absolute, line: line),
-            as: RunUntilResult.self
+            params: BreakSetParams(sessionId: session, file: file, line: line),
+            as: BreakSetResult.self
         )
         try JSONOutput.print(result)
-    }
-
-    private func parseLocation(_ loc: String) throws -> (String, Int) {
-        guard let colon = loc.lastIndex(of: ":"),
-              let line = Int(loc[loc.index(after: colon)...])
-        else {
-            throw LlmdbError.invalidArgument(name: "location", value: loc, valid: ["<file>:<line>"])
-        }
-        return (String(loc[..<colon]), line)
     }
 }

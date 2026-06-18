@@ -9,7 +9,7 @@ import Foundation
 
 // MARK: - Initialize
 
-struct InitializeArgs: Encodable, Sendable {
+struct InitializeArgs: Encodable {
     let clientID: String
     let clientName: String
     let adapterID: String
@@ -21,13 +21,13 @@ struct InitializeArgs: Encodable, Sendable {
 
 // MARK: - Launch / Attach
 
-struct LaunchArgs: Encodable, Sendable {
+struct LaunchArgs: Encodable {
     let program: String
     let args: [String]
     let stopOnEntry: Bool
 }
 
-struct AttachArgs: Encodable, Sendable {
+struct AttachArgs: Encodable {
     let pid: Int
     /// Pause the target on attach. Without this, lldb-dap may detach almost
     /// immediately after `configurationDone` (it considers the session
@@ -37,26 +37,28 @@ struct AttachArgs: Encodable, Sendable {
 
 // MARK: - Breakpoints
 
-struct SourceArg: Encodable, Decodable, Sendable {
+struct SourceArg: Encodable, Decodable {
     let path: String?
     let name: String?
-    init(path: String) { self.path = path; self.name = nil }
+    init(path: String) {
+        self.path = path; self.name = nil
+    }
 }
 
-struct BPLine: Encodable, Sendable {
+struct BPLine: Encodable {
     let line: Int
 }
 
-struct SetBreakpointsArgs: Encodable, Sendable {
+struct SetBreakpointsArgs: Encodable {
     let source: SourceArg
     let breakpoints: [BPLine]
 }
 
-struct SetBreakpointsBody: Decodable, Sendable {
+struct SetBreakpointsBody: Decodable {
     let breakpoints: [DAPBreakpointInfo]
 }
 
-struct DAPBreakpointInfo: Decodable, Sendable {
+struct DAPBreakpointInfo: Decodable {
     let id: Int?
     let verified: Bool
     let line: Int?
@@ -64,7 +66,7 @@ struct DAPBreakpointInfo: Decodable, Sendable {
     let message: String?
 }
 
-struct BreakpointEventBody: Decodable, Sendable {
+struct BreakpointEventBody: Decodable {
     let reason: String
     let breakpoint: DAPBreakpointInfo
 }
@@ -73,14 +75,14 @@ struct BreakpointEventBody: Decodable, Sendable {
 
 /// Used by `continue`, `pause`, `next`, `stepIn`, `stepOut` — all DAP commands
 /// that target a single thread with no other parameters.
-struct ThreadIdArgs: Encodable, Sendable {
+struct ThreadIdArgs: Encodable {
     let threadId: Int
 }
 
 /// Alias for readability at call sites. (Same shape.)
 typealias ContinueArgs = ThreadIdArgs
 
-struct StoppedEventBody: Decodable, Sendable {
+struct StoppedEventBody: Decodable {
     let reason: String
     let threadId: Int?
     let description: String?
@@ -89,18 +91,18 @@ struct StoppedEventBody: Decodable, Sendable {
 
 // MARK: - Threads
 
-struct ThreadsBody: Decodable, Sendable {
+struct ThreadsBody: Decodable {
     let threads: [DAPThread]
 }
 
-struct DAPThread: Decodable, Sendable {
+struct DAPThread: Decodable {
     let id: Int
     let name: String
 }
 
 // MARK: - Evaluate
 
-struct EvaluateArgs: Encodable, Sendable {
+struct EvaluateArgs: Encodable {
     let expression: String
     let frameId: Int?
     /// "watch" | "repl" | "hover" | "clipboard" | "variables" — affects how
@@ -108,7 +110,7 @@ struct EvaluateArgs: Encodable, Sendable {
     let context: String?
 }
 
-struct EvaluateBody: Decodable, Sendable {
+struct EvaluateBody: Decodable {
     let result: String
     let type: String?
     let variablesReference: Int
@@ -116,17 +118,17 @@ struct EvaluateBody: Decodable, Sendable {
 
 // MARK: - Stack / Scopes / Variables
 
-struct StackTraceArgs: Encodable, Sendable {
+struct StackTraceArgs: Encodable {
     let threadId: Int
     let startFrame: Int
     let levels: Int
 }
 
-struct StackTraceBody: Decodable, Sendable {
+struct StackTraceBody: Decodable {
     let stackFrames: [DAPFrame]
 }
 
-struct DAPFrame: Decodable, Sendable {
+struct DAPFrame: Decodable {
     let id: Int
     let name: String
     let source: SourceArg?
@@ -134,28 +136,28 @@ struct DAPFrame: Decodable, Sendable {
     let column: Int?
 }
 
-struct ScopesArgs: Encodable, Sendable {
+struct ScopesArgs: Encodable {
     let frameId: Int
 }
 
-struct ScopesBody: Decodable, Sendable {
+struct ScopesBody: Decodable {
     let scopes: [DAPScope]
 }
 
-struct DAPScope: Decodable, Sendable {
+struct DAPScope: Decodable {
     let name: String
     let variablesReference: Int
 }
 
-struct VariablesArgs: Encodable, Sendable {
+struct VariablesArgs: Encodable {
     let variablesReference: Int
 }
 
-struct VariablesBody: Decodable, Sendable {
+struct VariablesBody: Decodable {
     let variables: [DAPVariable]
 }
 
-struct DAPVariable: Decodable, Sendable {
+struct DAPVariable: Decodable {
     let name: String
     let value: String
     let type: String?

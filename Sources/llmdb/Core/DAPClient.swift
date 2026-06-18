@@ -74,7 +74,9 @@ actor DAPClient {
     deinit {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         if process.isRunning { process.terminate() }
-        for (_, cont) in subscribers { cont.finish() }
+        for (_, cont) in subscribers {
+            cont.finish()
+        }
     }
 
     func terminate() {
@@ -82,9 +84,13 @@ actor DAPClient {
         closed = true
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         if process.isRunning { process.terminate() }
-        for (_, cont) in subscribers { cont.finish() }
+        for (_, cont) in subscribers {
+            cont.finish()
+        }
         subscribers.removeAll()
-        for (_, cont) in pending { cont.resume(throwing: DAPError.closed) }
+        for (_, cont) in pending {
+            cont.resume(throwing: DAPError.closed)
+        }
         pending.removeAll()
     }
 
@@ -119,7 +125,9 @@ actor DAPClient {
         return Task {
             try await withThrowingTaskGroup(of: DAPEvent.self) { group in
                 group.addTask {
-                    for await event in stream where predicate(event) { return event }
+                    for await event in stream where predicate(event) {
+                        return event
+                    }
                     throw DAPError.closed
                 }
                 group.addTask {
@@ -181,9 +189,13 @@ actor DAPClient {
     private func handleClose() {
         guard !closed else { return }
         closed = true
-        for (_, cont) in subscribers { cont.finish() }
+        for (_, cont) in subscribers {
+            cont.finish()
+        }
         subscribers.removeAll()
-        for (_, cont) in pending { cont.resume(throwing: DAPError.closed) }
+        for (_, cont) in pending {
+            cont.resume(throwing: DAPError.closed)
+        }
         pending.removeAll()
     }
 
@@ -217,7 +229,9 @@ actor DAPClient {
                 }
             }
         case .event(let evt):
-            for (_, cont) in subscribers { cont.yield(evt) }
+            for (_, cont) in subscribers {
+                cont.yield(evt)
+            }
         }
     }
 
@@ -226,7 +240,7 @@ actor DAPClient {
     /// Returns `(body, totalBytesConsumed)` when a complete message is present,
     /// or nil if more bytes are needed.
     private func extractMessage(from data: Data) -> (Data, Int)? {
-        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A])  // \r\n\r\n
+        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // \r\n\r\n
         guard let sepRange = data.range(of: separator) else { return nil }
         let headerBytes = data[data.startIndex..<sepRange.lowerBound]
         guard let headerString = String(data: headerBytes, encoding: .utf8) else { return nil }
@@ -248,7 +262,7 @@ actor DAPClient {
 
     // MARK: - Helpers
 
-    private struct EmptyArgs: Encodable, Sendable {}
+    private struct EmptyArgs: Encodable {}
 
     private static func resolveExecutable() async -> String {
         await Task.detached {

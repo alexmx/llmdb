@@ -27,7 +27,6 @@ import Foundation
 ///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
 ///   stop          { sessionId? }                                → { ok: true }
 public final class Daemon: @unchecked Sendable {
-
     public static var defaultSocketPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent("Library/Caches/llmdb/llmdbd.sock").path
@@ -72,7 +71,7 @@ public final class Daemon: @unchecked Sendable {
             self?.acceptPending()
         }
         source.resume()
-        self.acceptSource = source
+        acceptSource = source
 
         FileHandle.standardError.write(Data("llmdbd listening on \(socketPath)\n".utf8))
     }
@@ -103,7 +102,7 @@ public final class Daemon: @unchecked Sendable {
             let flags = Darwin.fcntl(clientFD, F_GETFL, 0)
             _ = Darwin.fcntl(clientFD, F_SETFL, flags & ~O_NONBLOCK)
 
-            let mgr = self.manager
+            let mgr = manager
             Task { await Self.handleClient(fd: clientFD, manager: mgr) }
         }
     }
@@ -123,7 +122,7 @@ public final class Daemon: @unchecked Sendable {
                     return r
                 }
             }
-            if n <= 0 { return }  // error or EOF
+            if n <= 0 { return } // error or EOF
             buffer.append(contentsOf: readBuf.prefix(n))
 
             while let nlIndex = buffer.firstIndex(of: 0x0A) {
@@ -154,30 +153,19 @@ public final class Daemon: @unchecked Sendable {
             }
             let paramsObj = obj["params"] as? [String: Any] ?? [:]
             let paramsData = try JSONSerialization.data(withJSONObject: paramsObj)
+            func decode<P: Decodable>(_ type: P.Type) throws -> P {
+                try JSONDecoder().decode(type, from: paramsData)
+            }
 
             switch method {
             case "launch":
-                let p = try JSONDecoder().decode(LaunchParams.self, from: paramsData)
+                let p = try decode(LaunchParams.self)
                 let snap = try await manager.launch(binary: p.binary, args: p.args ?? [])
                 return encodeOK(id: requestID, result: snap)
 
             case "attach":
-                let p = try JSONDecoder().decode(AttachParams.self, from: paramsData)
-                let pid: Int32
-                switch (p.pid, p.app) {
-                case (let explicitPID?, nil):
-                    pid = explicitPID
-                case (nil, let bundleID?):
-                    pid = try await SimulatorResolver.resolvePID(bundleID: bundleID)
-                case (nil, nil):
-                    throw LlmdbError.invalidArgument(
-                        name: "attach", value: "(nothing)", valid: ["pid", "app"]
-                    )
-                case (_, _):
-                    throw LlmdbError.invalidArgument(
-                        name: "attach", value: "both pid and app", valid: ["one of pid or app"]
-                    )
-                }
+                let p = try decode(AttachParams.self)
+                let pid = try await resolveAttachPID(p)
                 let snap = try await manager.attach(pid: pid)
                 return encodeOK(id: requestID, result: snap)
 
@@ -186,65 +174,65 @@ public final class Daemon: @unchecked Sendable {
                 return encodeOK(id: requestID, result: list)
 
             case "break.set":
-                let p = try JSONDecoder().decode(BreakSetParams.self, from: paramsData)
+                let p = try decode(BreakSetParams.self)
                 let (snap, bp) = try await manager.setBreakpoint(
                     sessionId: p.sessionId, file: p.file, line: p.line
                 )
                 return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
 
             case "break.list":
-                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let p = try decode(SessionParams.self)
                 let bps = try await manager.listBreakpoints(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
 
             case "break.delete":
-                let p = try JSONDecoder().decode(BreakDeleteParams.self, from: paramsData)
+                let p = try decode(BreakDeleteParams.self)
                 let bps = try await manager.deleteBreakpoint(sessionId: p.sessionId, id: p.id)
                 return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
 
             case "continue":
-                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let p = try decode(SessionParams.self)
                 let snap = try await manager.continueExecution(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: snap)
 
             case "run-until":
-                let p = try JSONDecoder().decode(RunUntilParams.self, from: paramsData)
+                let p = try decode(BreakSetParams.self)
                 let (snap, bp) = try await manager.runUntil(
                     sessionId: p.sessionId, file: p.file, line: p.line
                 )
-                return encodeOK(id: requestID, result: RunUntilResult(snapshot: snap, breakpoint: bp))
+                return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
 
             case "interrupt":
-                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let p = try decode(SessionParams.self)
                 let snap = try await manager.interrupt(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: snap)
 
             case "step":
-                let p = try JSONDecoder().decode(StepParams.self, from: paramsData)
+                let p = try decode(StepParams.self)
                 let snap = try await manager.step(sessionId: p.sessionId, granularity: p.granularity)
                 return encodeOK(id: requestID, result: snap)
 
             case "bt":
-                let p = try JSONDecoder().decode(BtParams.self, from: paramsData)
+                let p = try decode(BtParams.self)
                 let frames = try await manager.backtrace(
                     sessionId: p.sessionId, threadId: p.threadId, depth: p.depth
                 )
                 return encodeOK(id: requestID, result: BacktraceResult(frames: frames))
 
             case "locals":
-                let p = try JSONDecoder().decode(LocalsParams.self, from: paramsData)
+                let p = try decode(LocalsParams.self)
                 let locals = try await manager.locals(
                     sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0
                 )
                 return encodeOK(id: requestID, result: LocalsResult(locals: locals))
 
             case "threads":
-                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let p = try decode(SessionParams.self)
                 let ts = try await manager.threads(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: ThreadsResult(threads: ts))
 
             case "expr":
-                let p = try JSONDecoder().decode(ExprParams.self, from: paramsData)
+                let p = try decode(ExprParams.self)
                 let r = try await manager.evaluate(
                     sessionId: p.sessionId, expression: p.expression, frameIndex: p.frame ?? 0
                 )
@@ -253,7 +241,7 @@ public final class Daemon: @unchecked Sendable {
                 ))
 
             case "stop":
-                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let p = try decode(SessionParams.self)
                 _ = try await manager.stop(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: StopResult(ok: true))
 
@@ -262,6 +250,25 @@ public final class Daemon: @unchecked Sendable {
             }
         } catch {
             return encodeError(id: requestID, message: "\(error)")
+        }
+    }
+
+    /// Resolve `AttachParams` to a concrete host PID. Enforces the
+    /// exactly-one-of-(pid, app) constraint that the flat JSON shape can't.
+    private static func resolveAttachPID(_ p: AttachParams) async throws -> Int32 {
+        switch (p.pid, p.app) {
+        case (let pid?, nil):
+            return pid
+        case (nil, let bundleID?):
+            return try await SimulatorResolver.resolvePID(bundleID: bundleID)
+        case (nil, nil):
+            throw LlmdbError.invalidArgument(
+                name: "attach", value: "(nothing)", valid: ["pid", "app"]
+            )
+        case (_, _):
+            throw LlmdbError.invalidArgument(
+                name: "attach", value: "both pid and app", valid: ["one of pid or app"]
+            )
         }
     }
 
@@ -279,4 +286,3 @@ public final class Daemon: @unchecked Sendable {
         (try? JSONEncoder().encode(RPCError(id: id, error: message))) ?? Data()
     }
 }
-

@@ -1,14 +1,13 @@
 import Foundation
-import Testing
 @testable import llmdb
+import Testing
 
 @Suite("DAPClient against llmdb-fixture")
 struct DAPClientIntegrationTests {
-
     /// Drives the full M1 path: initialize → launch → setBreakpoints →
     /// configurationDone → stopped → stackTrace → scopes → variables.
     /// Asserts the locals at fixture BP1 match the math.
-    @Test("hits BP1 in compute() and reads the expected locals")
+    @Test
     func breakpointAndLocals() async throws {
         let paths = try fixturePaths()
 
@@ -68,7 +67,9 @@ struct DAPClientIntegrationTests {
         let vars = try varsResp.decodeBody(VariablesBody.self)
 
         var values: [String: String] = [:]
-        for v in vars.variables { values[v.name] = v.value }
+        for v in vars.variables {
+            values[v.name] = v.value
+        }
         #expect(values["x"] == "3")
         #expect(values["y"] == "4")
         #expect(values["sum"] == "7")
@@ -106,12 +107,19 @@ struct DAPClientIntegrationTests {
     struct TestTimeout: Error, CustomStringConvertible {
         let seconds: TimeInterval
         let waitingFor: String
-        var description: String { "timed out after \(seconds)s waiting for `\(waitingFor)` event" }
+        var description: String {
+            "timed out after \(seconds)s waiting for `\(waitingFor)` event"
+        }
     }
 
     struct TestSkip: Error, CustomStringConvertible {
         let message: String
-        init(_ m: String) { self.message = m }
-        var description: String { message }
+        init(_ m: String) {
+            self.message = m
+        }
+
+        var description: String {
+            message
+        }
     }
 }
