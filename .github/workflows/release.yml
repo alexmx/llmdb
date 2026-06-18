@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.llmdb-version']
+
+permissions:
+  contents: write  # Needed to create releases and tags
+
+jobs:
+  build-release:
+    runs-on: macos-15
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for git operations
+
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app
+
+      - name: Read version from .llmdb-version
+        id: version
+        run: |
+          VERSION=$(cat .llmdb-version)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Version from .llmdb-version: $VERSION"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.VERSION }}" >/dev/null 2>&1; then
+            echo "ℹ️  Tag v${{ steps.version.outputs.VERSION }} already exists, skipping release"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Tag v${{ steps.version.outputs.VERSION }} does not exist, proceeding with release"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate Version.swift
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "let llmdbVersion = \"${{ steps.version.outputs.VERSION }}\"" > Sources/llmdb/Version.swift
+          echo "📝 Generated Version.swift:"
+          cat Sources/llmdb/Version.swift
+
+      - name: Build universal binary
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "🔨 Building universal binary..."
+          swift build -c release --arch arm64 --arch x86_64
+          strip .build/apple/Products/Release/llmdb
+          ls -lh .build/apple/Products/Release/llmdb
+
+      - name: Verify version in binary
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          EXPECTED_VERSION="${{ steps.version.outputs.VERSION }}"
+          ACTUAL_VERSION=$(.build/apple/Products/Release/llmdb --version)
+          echo "Expected: $EXPECTED_VERSION"
+          echo "Actual: $ACTUAL_VERSION"
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "❌ Version mismatch!"
+            exit 1
+          fi
+          echo "✅ Version verified: $ACTUAL_VERSION"
+
+      - name: Create git tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.VERSION }}" -m "Release v${{ steps.version.outputs.VERSION }}"
+          git push origin "v${{ steps.version.outputs.VERSION }}"
+
+      - name: Package binary
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          cd .build/apple/Products/Release
+          zip llmdb-${{ steps.version.outputs.VERSION }}-macos.zip llmdb
+          shasum -a 256 llmdb-${{ steps.version.outputs.VERSION }}-macos.zip > llmdb-${{ steps.version.outputs.VERSION }}-macos.zip.sha256
+          echo "📦 Package created:"
+          ls -lh llmdb-${{ steps.version.outputs.VERSION }}-macos.zip*
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: Release v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            .build/apple/Products/Release/llmdb-${{ steps.version.outputs.VERSION }}-macos.zip
+            .build/apple/Products/Release/llmdb-${{ steps.version.outputs.VERSION }}-macos.zip.sha256
+
+      - name: Update Homebrew formula
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          # Calculate SHA256 of the binary zip we just built
+          SHA256=$(shasum -a 256 .build/apple/Products/Release/llmdb-${VERSION}-macos.zip | awk '{print $1}')
+          echo "📦 Binary zip SHA256: $SHA256"
+
+          # Clone homebrew-tools
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/alexmx/homebrew-tools.git" /tmp/homebrew-tools
+          cd /tmp/homebrew-tools
+
+          # Update formula with new version and SHA256
+          sed -i '' "s|url \".*\"|url \"https://github.com/alexmx/llmdb/releases/download/v${VERSION}/llmdb-${VERSION}-macos.zip\"|" Formula/llmdb.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/llmdb.rb
+
+          echo "📝 Updated Formula/llmdb.rb:"
+          cat Formula/llmdb.rb
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/llmdb.rb
+          git commit -m "Update llmdb to v${VERSION}"
+          git push
