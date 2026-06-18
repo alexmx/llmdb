@@ -86,12 +86,16 @@ enum DaemonClient {
     }
 
     private static func spawnDaemon() throws {
-        let exe = CommandLine.arguments[0]
-        let resolved: String = (exe as NSString).isAbsolutePath
-            ? exe
-            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(exe)
+        // Re-spawn THIS binary. Bundle.main.executablePath wraps
+        // _NSGetExecutablePath() which always returns the actual resolved
+        // filesystem path the OS exec'd, regardless of what argv[0] was set
+        // to. CommandLine.arguments[0] is unreliable: for PATH-invoked
+        // binaries it's just "llmdb" with no directory component, and the
+        // old cwd-relative fallback would try to spawn `<cwd>/llmdb` which
+        // doesn't exist when the binary lives in /opt/homebrew/bin.
+        let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: resolved)
+        proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = ["daemon"]
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = FileHandle.nullDevice
@@ -99,7 +103,7 @@ enum DaemonClient {
         do {
             try proc.run()
         } catch {
-            throw LlmdbError.daemonUnreachable("failed to spawn daemon: \(error)")
+            throw LlmdbError.daemonUnreachable("failed to spawn daemon (\(exe)): \(error)")
         }
     }
 
