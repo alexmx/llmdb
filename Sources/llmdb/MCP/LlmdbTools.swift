@@ -9,9 +9,12 @@ enum LlmdbTools {
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete,
             continueExec, runUntil, interrupt, step,
-            backtrace, locals, threads, expr
+            backtrace, locals, threads, expr,
+            doctor,
         ]
     }
+
+    struct DoctorToolArgs: MCPToolInput {}
 
     // MARK: - Args
 
@@ -224,6 +227,17 @@ enum LlmdbTools {
             BreakDeleteParams(sessionId: args.session_id, id: args.id),
             BreakListResult.self
         )
+    }
+
+    static let doctor = MCPTool(
+        name: "llmdb_doctor",
+        description: "Diagnose the local llmdb environment: lldb-dap availability, socket directory permissions, daemon reachability. Returns { checks: [{name, ok, detail?}] }. Run before starting a debug session if anything seems off."
+    ) { (_: DoctorToolArgs) in
+        let report = await Doctor.runChecks()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(report)
+        return .text(String(decoding: data, as: UTF8.self))
     }
 
     // MARK: - Helpers
