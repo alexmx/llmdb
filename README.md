@@ -2,54 +2,235 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-A macOS CLI tool and MCP server that wraps `lldb-dap` to give AI agents a structured, session-oriented debugger. Launch a binary, set breakpoints, walk the stack, inspect locals — all returning JSON, all driven by the same verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 16 verbs from the command line or over MCP.
 
-## Status
+## See it in action
 
-Pre-alpha. v0.1 verb surface complete (M1 + M2). 15 CLI verbs / 15 MCP tools wired through the `llmdbd` Unix-socket daemon. iOS Simulator app debugging works via `llmdb attach --app <bundle-id>`. Next up: M3 — Brew tap + mise + release automation.
+A complete debug session — launch, break, continue, inspect, evaluate, step — in seven calls. Run it yourself against the bundled Swift fixture (`swift build` first).
+
+### 1. Launch — start the binary under the debugger
+
+```bash
+llmdb launch ./.build/debug/llmdb-fixture quick
+{
+  "sessionId" : "2649sk",
+  "state" : "stopped",
+  "stopReason" : { "reason" : "exception", "description" : "signal SIGSTOP", ... }
+}
+```
+
+The daemon auto-spawns on first call. The binary stops on entry so the next call has a quiescent target.
+
+### 2. Set a breakpoint and run until it hits — one call
+
+```bash
+llmdb run-until ./Sources/Fixture/main.swift:34
+{
+  "breakpoint" : { "id" : 1, "line" : 34, "verified" : true, ... },
+  "snapshot"   : {
+    "state" : "stopped",
+    "stopReason" : { "reason" : "breakpoint", "hitBreakpointIDs" : [1], ... }
+  }
+}
+```
+
+`run-until` composes `break set` + `continue` for the most common agent flow. Use the two separately when you want to inspect between.
+
+### 3. Inspect — backtrace and typed locals
+
+```bash
+llmdb bt --depth 3
+{ "frames" : [
+    { "name" : "compute(x:y:)", "line" : 34, "source" : ".../main.swift", ... },
+    { "name" : "llmdb_fixture_main", "line" : 62, ... },
+    { "name" : "start", "source" : "/usr/lib/dyld`start", ... }
+]}
+```
+
+```bash
+llmdb locals
+{ "locals" : [
+    { "name" : "x",       "type" : "Int", "value" : "3"  },
+    { "name" : "y",       "type" : "Int", "value" : "4"  },
+    { "name" : "sum",     "type" : "Int", "value" : "7"  },
+    { "name" : "product", "type" : "Int", "value" : "12" },
+    { "name" : "diff",    "type" : "Int", "value" : "1"  },
+    { "name" : "total",   "type" : "Int", "value" : "20" }
+]}
+```
+
+Values are lldb-formatted strings — agents can read them directly without parsing memory layouts.
+
+### 4. Evaluate — ask lldb anything
+
+```bash
+llmdb expr "sum + diff"
+{ "type" : "Int", "value" : "8", "variablesReference" : 0 }
+```
+
+`expr` runs in the context of the current frame. Use it when `locals` isn't enough — for property access (`self.state.count`), method calls, or arithmetic over locals.
+
+### 5. Step — and verify you moved
+
+```bash
+llmdb step --over
+{ "state" : "stopped", "stopReason" : { "reason" : "step", "description" : "step over", ... } }
+```
+
+```bash
+llmdb bt --depth 1
+{ "frames" : [{ "name" : "llmdb_fixture_main", "line" : 62, ... }] }
+```
+
+`--over` / `--in` / `--out` are mutually exclusive flags; default is `--over`.
+
+### 6. Tear down
+
+```bash
+llmdb stop
+{ "ok" : true }
+```
 
 ## Install
 
-Coming soon via Homebrew tap and mise.
-
-## Quick start
+### Homebrew
 
 ```bash
-# Launch a Swift binary under the debugger
-llmdb launch ./build/MyApp
-
-# Set a breakpoint and run until it hits
-llmdb break set MyApp/main.swift:42
-llmdb continue
-
-# Inspect
-llmdb bt
-llmdb locals
+brew install alexmx/tools/llmdb
 ```
 
-## Architecture
+### Mise
 
-```
-┌─ llmdb CLI ──┐  unix socket   ┌─ llmdbd ──────────┐  DAP/stdio  ┌─ lldb-dap ─┐
-│ one-shot     │ ─────────────► │ owns sessions     │ ──────────► │ per session│
-│ commands     │ ◄───────────── │ JSON-RPC surface  │ ◄────────── │            │
-└──────────────┘                └───────────────────┘             └────────────┘
-        ▲                              ▲
-   ┌─ llmdb mcp ──┐                    │
-   │ MCP server   │ ───────────────────┘
-   └──────────────┘
+```bash
+mise use --global github:alexmx/llmdb
 ```
 
-- `llmdb daemon` runs the background process that owns active debug sessions. Socket lives at `~/Library/Caches/llmdb/llmdbd.sock`; set `LLMDB_SOCKET_PATH=…` in an agent's environment to give it an isolated daemon (handy when two MCP agents shouldn't share sessions).
-- The CLI and MCP server are both thin clients; first invocation auto-spawns the daemon.
-- Each session backs onto its own `lldb-dap` child process.
+## Requirements
 
-## v0.1 scope
+- macOS 15 or later
+- Xcode or Command Line Tools (provides `lldb-dap`)
+- A debuggable target — debug builds with `get-task-allow=true` (the Xcode default). Release builds with Hardened Runtime can't be attached without re-signing.
 
-**In:** macOS + iOS Simulator targets, Debug builds of your own apps, `launch`/`attach`/`stop`, breakpoints (file:line / symbol), step/continue/run-until/interrupt, backtrace, locals, expressions, threads. JSON output by default.
+Run `llmdb doctor` to verify the toolchain and the daemon socket:
 
-**Out:** watchpoints, conditional breakpoints, memory/registers/disasm, core dumps, on-device iOS, custom formatters, multi-process, reverse debugging.
+```bash
+llmdb doctor
+{ "checks" : [
+    { "name" : "lldb-dap",   "ok" : true, "detail" : "/Applications/Xcode.app/.../lldb-dap" },
+    { "name" : "socket-dir", "ok" : true, "detail" : "~/Library/Caches/llmdb" },
+    { "name" : "daemon",     "ok" : true, "detail" : "~/Library/Caches/llmdb/llmdbd.sock" }
+]}
+```
+
+Exits non-zero on any failure so it fits in shell scripts.
+
+## More examples
+
+```bash
+# Attach to a running process by PID
+llmdb attach --pid 12345
+
+# Attach to a SwiftUI app in the booted iOS Simulator
+llmdb attach --app com.example.MyApp
+
+# List all sessions across all agents talking to this daemon
+llmdb sessions
+
+# Manage breakpoints
+llmdb break set ./Sources/Fixture/main.swift:34
+llmdb break list
+llmdb break delete 1
+
+# Pause a running session
+llmdb interrupt
+
+# Inspect threads
+llmdb threads
+```
+
+## Command reference
+
+All commands return JSON by default (`--format json`). Pass `--session <id>` when more than one session is active.
+
+### Lifecycle
+
+| Command | Description | Key options |
+|---|---|---|
+| `launch <binary> [-- args…]` | Launch a binary under `lldb-dap`. Stops on entry. | Forwards trailing args to the binary |
+| `attach` | Attach to a running process or Simulator app | `--pid N` OR `--app <bundle-id>` (exactly one) |
+| `stop` | Detach / terminate the session | `--session ID` |
+| `sessions` | List active debug sessions | — |
+
+### Breakpoints
+
+| Command | Description | Key options |
+|---|---|---|
+| `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot | — |
+| `break list` | List breakpoints in the session | — |
+| `break delete <id>` | Remove a breakpoint by id; returns the survivors | — |
+
+### Execution
+
+| Command | Description | Key options |
+|---|---|---|
+| `continue` | Resume until the next stop | — |
+| `run-until <file>:<line>` | `break set` + `continue` in one call | — |
+| `step` | Step one source line | `--over` (default), `--in`, `--out` |
+| `interrupt` | Pause a running session | — |
+
+### Inspection
+
+| Command | Description | Key options |
+|---|---|---|
+| `bt` | Structured backtrace for the stopped thread | `--thread N`, `--depth N` |
+| `locals` | Typed locals for a stack frame | `--frame N` (default 0) |
+| `threads` | List threads in the session | — |
+| `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
+
+### System
+
+| Command | Description | Key options |
+|---|---|---|
+| `doctor` | Verify lldb-dap, socket dir, daemon reachability. Exits 1 on failure. | — |
+| `daemon` | Run `llmdbd` (normally auto-spawned). | `--socket PATH` to override |
+| `mcp` | Start the stdio MCP server. | `--setup` prints client config snippets |
+
+## MCP server
+
+llmdb runs as a stdio MCP server. Every CLI verb is exposed as an `llmdb_*` tool (`llmdb_launch`, `llmdb_break_set`, `llmdb_run_until`, …) mirroring the CLI 1:1.
+
+```bash
+llmdb mcp --setup   # prints config for Claude Code, Cursor, Codex CLI, etc.
+```
+
+Manual configuration:
+
+```json
+{
+  "mcpServers": {
+    "llmdb": { "command": "llmdb", "args": ["mcp"] }
+  }
+}
+```
+
+### Multi-agent isolation
+
+Two agents driving llmdb at the same time share a single daemon by default — convenient, but they see each other's sessions and the "default session when only one is active" shortcut stops working. Give each agent its own daemon via the `LLMDB_SOCKET_PATH` env var:
+
+```json
+{
+  "mcpServers": {
+    "llmdb": {
+      "command": "llmdb",
+      "args": ["mcp"],
+      "env": { "LLMDB_SOCKET_PATH": "/tmp/llmdb-agent-a.sock" }
+    }
+  }
+}
+```
+
+Set a distinct path per agent — auto-spawn picks up the override automatically and each agent gets a fully isolated daemon, sessions, and `lldb-dap` children.
 
 ## License
 
-MIT
+Released under the [MIT License](LICENSE).
