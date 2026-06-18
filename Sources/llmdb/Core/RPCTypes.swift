@@ -87,6 +87,17 @@ struct StepParams: Codable, Sendable {
     let granularity: StepGranularity
 }
 
+struct ExprParams: Codable, Sendable {
+    let sessionId: String?
+    let expression: String
+    let frame: Int?
+}
+
+struct BreakDeleteParams: Codable, Sendable {
+    let sessionId: String?
+    let id: Int
+}
+
 // MARK: - Results
 
 struct BreakSetResult: Codable, Sendable {
@@ -104,6 +115,16 @@ struct LocalsResult: Codable, Sendable {
 
 struct ThreadsResult: Codable, Sendable {
     let threads: [Thread]
+}
+
+struct ExprResult: Codable, Sendable {
+    let value: String
+    let type: String?
+    let variablesReference: Int
+}
+
+struct BreakListResult: Codable, Sendable {
+    let breakpoints: [Breakpoint]
 }
 
 struct StopResult: Codable, Sendable {

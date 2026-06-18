@@ -137,6 +137,81 @@ actor SessionManager {
         }
     }
 
+    /// Evaluate an expression in the context of a stack frame (default: top
+    /// frame of the stopped thread). Returns the raw result string lldb
+    /// produced — same shape as `locals` values.
+    func evaluate(
+        sessionId: String?,
+        expression: String,
+        frameIndex: Int = 0
+    ) async throws -> (value: String, type: String?, variablesReference: Int) {
+        let entry = try resolve(sessionId)
+        guard let tid = entry.stoppedThreadId else {
+            throw LlmdbError.dapFailure("no stopped thread; expr requires a paused session")
+        }
+        // Fetch just the one frame so we can pass its frameId for context.
+        let frames = try await fetchFrames(entry, threadId: tid, startFrame: frameIndex, levels: 1)
+        guard let frame = frames.first else {
+            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
+        }
+        // context="watch" returns just the value (e.g. "20") instead of the
+        // REPL's verbose "(Int) $R0 = 20" form. Closer to what locals returns.
+        let resp = try await entry.client.request(
+            "evaluate",
+            arguments: EvaluateArgs(expression: expression, frameId: frame.id, context: "watch")
+        )
+        let body = try resp.decodeBody(EvaluateBody.self)
+        return (body.result, body.type, body.variablesReference)
+    }
+
+    /// All breakpoints currently tracked for the session, sorted by id.
+    func listBreakpoints(sessionId: String?) throws -> [Breakpoint] {
+        let entry = try resolve(sessionId)
+        return entry.breakpoints.values.sorted { $0.id < $1.id }
+    }
+
+    /// Delete a breakpoint by id. DAP has no per-id delete: we look up the
+    /// breakpoint's source, then re-issue `setBreakpoints` for that source
+    /// with the surviving lines.
+    func deleteBreakpoint(sessionId: String?, id: Int) async throws -> [Breakpoint] {
+        let entry = try resolve(sessionId)
+        guard let doomed = entry.breakpoints[id] else {
+            throw LlmdbError.invalidArgument(
+                name: "id",
+                value: "\(id)",
+                valid: entry.breakpoints.keys.map { String($0) }
+            )
+        }
+        guard let source = doomed.source else {
+            throw LlmdbError.dapFailure("breakpoint \(id) has no source path; cannot rebuild setBreakpoints")
+        }
+        let survivors = entry.breakpoints.values
+            .filter { $0.source == source && $0.id != id }
+            .compactMap { $0.line.map { BPLine(line: $0) } }
+
+        let resp = try await entry.client.request(
+            "setBreakpoints",
+            arguments: SetBreakpointsArgs(source: .init(path: source), breakpoints: survivors)
+        )
+        // Re-sync our tracking for this source from the response. lldb-dap
+        // returns the surviving BPs with their (possibly new) ids.
+        for old in entry.breakpoints.values where old.source == source {
+            entry.breakpoints.removeValue(forKey: old.id)
+        }
+        let body = try resp.decodeBody(SetBreakpointsBody.self)
+        for bp in body.breakpoints {
+            guard let bid = bp.id else { continue }
+            entry.breakpoints[bid] = Breakpoint(
+                id: bid,
+                verified: bp.verified,
+                line: bp.line,
+                source: bp.source?.path ?? source,
+                message: bp.message
+            )
+        }
+        return entry.breakpoints.values.sorted { $0.id < $1.id }
+    }
+
     func backtrace(
         sessionId: String?,
         threadId: Int? = nil,
@@ -302,14 +377,18 @@ actor SessionManager {
         case "terminated", "exited":
             entry.info.state = .terminated
         case "breakpoint":
+            // `breakpoint` events are typically updates (verified status flips
+            // as modules load) and may omit source/line. Merge with what we
+            // already have so we don't blow away the original source path.
             if let body = try? event.decodeBody(BreakpointEventBody.self),
                let bid = body.breakpoint.id {
+                let existing = entry.breakpoints[bid]
                 entry.breakpoints[bid] = Breakpoint(
                     id: bid,
                     verified: body.breakpoint.verified,
-                    line: body.breakpoint.line,
-                    source: body.breakpoint.source?.path,
-                    message: body.breakpoint.message
+                    line: body.breakpoint.line ?? existing?.line,
+                    source: body.breakpoint.source?.path ?? existing?.source,
+                    message: body.breakpoint.message ?? existing?.message
                 )
             }
         default:

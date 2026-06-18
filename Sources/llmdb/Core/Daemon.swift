@@ -9,17 +9,20 @@ import Foundation
 /// the order they arrive.
 ///
 /// Methods:
-///   launch       { binary: String, args: [String] }            → SessionSnapshot
-///   attach       { pid: Int32 }                                → SessionSnapshot
-///   sessions     {}                                            → [Session]
-///   break.set    { sessionId?: String, file: String, line: Int } → { snapshot, breakpoint }
-///   continue     { sessionId?: String }                        → SessionSnapshot
-///   interrupt    { sessionId?: String }                        → SessionSnapshot
-///   step         { sessionId?: String, granularity: in|over|out } → SessionSnapshot
-///   bt           { sessionId?: String, depth?: Int }           → { frames }
-///   locals       { sessionId?: String, frame?: Int }           → { locals }
-///   threads      { sessionId?: String }                        → { threads }
-///   stop         { sessionId?: String }                        → { ok: true }
+///   launch        { binary: String, args: [String] }            → SessionSnapshot
+///   attach        { pid: Int32 }                                → SessionSnapshot
+///   sessions      {}                                            → [Session]
+///   break.set     { sessionId?, file, line }                    → { snapshot, breakpoint }
+///   break.list    { sessionId? }                                → { breakpoints }
+///   break.delete  { sessionId?, id }                            → { breakpoints }
+///   continue      { sessionId? }                                → SessionSnapshot
+///   interrupt     { sessionId? }                                → SessionSnapshot
+///   step          { sessionId?, granularity: in|over|out }      → SessionSnapshot
+///   bt            { sessionId?, depth? }                        → { frames }
+///   locals        { sessionId?, frame? }                        → { locals }
+///   threads       { sessionId? }                                → { threads }
+///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
+///   stop          { sessionId? }                                → { ok: true }
 public final class Daemon: @unchecked Sendable {
 
     public static var defaultSocketPath: String {
@@ -171,6 +174,16 @@ public final class Daemon: @unchecked Sendable {
                 )
                 return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
 
+            case "break.list":
+                let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
+                let bps = try await manager.listBreakpoints(sessionId: p.sessionId)
+                return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
+
+            case "break.delete":
+                let p = try JSONDecoder().decode(BreakDeleteParams.self, from: paramsData)
+                let bps = try await manager.deleteBreakpoint(sessionId: p.sessionId, id: p.id)
+                return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
+
             case "continue":
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
                 let snap = try await manager.continueExecution(sessionId: p.sessionId)
@@ -204,6 +217,15 @@ public final class Daemon: @unchecked Sendable {
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
                 let ts = try await manager.threads(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: ThreadsResult(threads: ts))
+
+            case "expr":
+                let p = try JSONDecoder().decode(ExprParams.self, from: paramsData)
+                let r = try await manager.evaluate(
+                    sessionId: p.sessionId, expression: p.expression, frameIndex: p.frame ?? 0
+                )
+                return encodeOK(id: requestID, result: ExprResult(
+                    value: r.value, type: r.type, variablesReference: r.variablesReference
+                ))
 
             case "stop":
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)

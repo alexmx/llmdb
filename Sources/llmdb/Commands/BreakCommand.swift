@@ -63,14 +63,19 @@ struct BreakCommand: AsyncParsableCommand {
         var format: OutputFormat = .default
 
         func run() async throws {
-            throw LlmdbError.notImplemented("break list (M2)")
+            let result = try await DaemonClient.call(
+                method: "break.list",
+                params: SessionParams(sessionId: session),
+                as: BreakListResult.self
+            )
+            try JSONOutput.print(result)
         }
     }
 
     struct DeleteSub: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "delete",
-            abstract: "Delete a breakpoint by ID"
+            abstract: "Delete a breakpoint by ID; returns the remaining breakpoints"
         )
 
         @Argument(help: "Breakpoint ID")
@@ -79,8 +84,16 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Session ID")
         var session: String?
 
+        @Option(name: .long, help: "Output format")
+        var format: OutputFormat = .default
+
         func run() async throws {
-            throw LlmdbError.notImplemented("break delete (M2)")
+            let result = try await DaemonClient.call(
+                method: "break.delete",
+                params: BreakDeleteParams(sessionId: session, id: id),
+                as: BreakListResult.self
+            )
+            try JSONOutput.print(result)
         }
     }
 }

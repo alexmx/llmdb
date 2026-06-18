@@ -98,6 +98,22 @@ struct DAPThread: Decodable, Sendable {
     let name: String
 }
 
+// MARK: - Evaluate
+
+struct EvaluateArgs: Encodable, Sendable {
+    let expression: String
+    let frameId: Int?
+    /// "watch" | "repl" | "hover" | "clipboard" | "variables" — affects how
+    /// lldb-dap formats the result. "repl" matches what a user would type.
+    let context: String?
+}
+
+struct EvaluateBody: Decodable, Sendable {
+    let result: String
+    let type: String?
+    let variablesReference: Int
+}
+
 // MARK: - Stack / Scopes / Variables
 
 struct StackTraceArgs: Encodable, Sendable {

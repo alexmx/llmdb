@@ -7,9 +7,9 @@ enum LlmdbTools {
     static var all: [MCPTool] {
         [
             launch, attach, stop, sessions,
-            breakSet,
+            breakSet, breakList, breakDelete,
             continueExec, interrupt, step,
-            backtrace, locals, threads
+            backtrace, locals, threads, expr
         ]
     }
 
@@ -62,6 +62,22 @@ enum LlmdbTools {
         var frame: Int?
         @InputProperty("Thread ID (defaults to the stopped thread)")
         var thread: Int?
+        @InputProperty("Session ID")
+        var session_id: String?
+    }
+
+    struct ExprToolArgs: MCPToolInput {
+        @InputProperty("Expression to evaluate (e.g. `self.state.count` or `a + b`)")
+        var expression: String
+        @InputProperty("Frame index (default 0, the top frame)")
+        var frame: Int?
+        @InputProperty("Session ID")
+        var session_id: String?
+    }
+
+    struct BreakDeleteToolArgs: MCPToolInput {
+        @InputProperty("Breakpoint id to delete")
+        var id: Int
         @InputProperty("Session ID")
         var session_id: String?
     }
@@ -160,6 +176,35 @@ enum LlmdbTools {
         description: "List threads in a stopped session."
     ) { (args: SessionToolArgs) in
         try await callJSON("threads", SessionParams(sessionId: args.session_id), ThreadsResult.self)
+    }
+
+    static let expr = MCPTool(
+        name: "llmdb_expr",
+        description: "Evaluate an expression in the context of a stack frame (default: top frame). Returns {value, type, variablesReference}. Use after `llmdb_locals` when you need to read a field or call expression that's not in locals."
+    ) { (args: ExprToolArgs) in
+        try await callJSON(
+            "expr",
+            ExprParams(sessionId: args.session_id, expression: args.expression, frame: args.frame),
+            ExprResult.self
+        )
+    }
+
+    static let breakList = MCPTool(
+        name: "llmdb_break_list",
+        description: "List all breakpoints in a session."
+    ) { (args: SessionToolArgs) in
+        try await callJSON("break.list", SessionParams(sessionId: args.session_id), BreakListResult.self)
+    }
+
+    static let breakDelete = MCPTool(
+        name: "llmdb_break_delete",
+        description: "Delete a breakpoint by id. Returns the surviving breakpoints."
+    ) { (args: BreakDeleteToolArgs) in
+        try await callJSON(
+            "break.delete",
+            BreakDeleteParams(sessionId: args.session_id, id: args.id),
+            BreakListResult.self
+        )
     }
 
     // MARK: - Helpers

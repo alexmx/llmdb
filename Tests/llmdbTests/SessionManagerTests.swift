@@ -53,7 +53,20 @@ struct SessionManagerIntegrationTests {
         let threads = try await manager.threads(sessionId: sessionID)
         #expect(!threads.isEmpty)
 
-        // 7. step --over the `return total` line; we return out of compute(),
+        // 7. expr — same math from the locals scope, but via lldb's evaluator
+        let totalExpr = try await manager.evaluate(sessionId: sessionID, expression: "total")
+        #expect(totalExpr.value == "20")
+        let sumPlusDiff = try await manager.evaluate(sessionId: sessionID, expression: "sum + diff")
+        #expect(sumPlusDiff.value == "8")  // 7 + 1
+
+        // 8. break list / break delete round-trip
+        let beforeDelete = try await manager.listBreakpoints(sessionId: sessionID)
+        #expect(beforeDelete.count == 1)
+        let bpID = beforeDelete[0].id
+        let afterDelete = try await manager.deleteBreakpoint(sessionId: sessionID, id: bpID)
+        #expect(afterDelete.isEmpty)
+
+        // 9. step --over the `return total` line; we return out of compute(),
         //    landing in the top-level caller at the print line.
         let stepSnap = try await manager.step(sessionId: sessionID, granularity: .over)
         #expect(stepSnap.state == .stopped)
@@ -62,7 +75,7 @@ struct SessionManagerIntegrationTests {
         // Top frame should no longer be inside compute()
         #expect(!afterStep[0].name.contains("compute"))
 
-        // 8. stop — clean teardown
+        // 10. stop — clean teardown
         let stopped = try await manager.stop(sessionId: sessionID)
         #expect(stopped == true)
         #expect(await manager.list().isEmpty)

@@ -73,7 +73,9 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 - **sessions** — List active sessions.
 
 ### Breakpoints
-- **break set** — `<file>:<line>`. `--symbol`/`--regex` and `break list`/`break delete` deferred.
+- **break set** — `<file>:<line>`. `--symbol`/`--regex` deferred.
+- **break list** — All breakpoints in the session.
+- **break delete <id>** — Remove one; returns the surviving breakpoints.
 
 ### Execution
 - **continue** — Resume until next stop.
@@ -85,7 +87,7 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 - **bt** — Structured backtrace (`--thread`, `--depth`).
 - **locals** — Typed locals for a frame.
 - **threads** — List threads.
-- **expr** — deferred.
+- **expr `<expression>`** — Evaluate in the context of a frame. Uses lldb's `watch` formatting (clean value, not REPL prefix).
 
 ### System
 - **daemon** — Run the background daemon (normally auto-spawned).
@@ -123,5 +125,5 @@ swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
 ## Milestones
 
 - **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
-- **M2 (current):** attach flow shipped (`attach`, `interrupt`, `threads`, `step`). Remaining: `run-until`, `expr`, `break list/delete`, iOS Simulator app-id resolver.
+- **M2 (current):** attach flow + inspection round-out shipped (`attach`, `interrupt`, `threads`, `step`, `expr`, `break list`, `break delete`). Remaining: `run-until`, iOS Simulator app-id resolver.
 - **M3:** Brew tap + mise + release automation.
