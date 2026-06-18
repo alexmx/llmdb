@@ -78,10 +78,11 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 - **break delete <id>** — Remove one; returns the surviving breakpoints.
 
 ### Execution
-- **continue** — Resume until next stop.
-- **run-until `<file>:<line>`** — Set a breakpoint and continue in one call. Returns the stop snapshot and the breakpoint that was set.
-- **step** — `--in` / `--over` (default) / `--out`.
-- **interrupt** — Pause a running session.
+- **continue** — Resume until next stop. `--wait <seconds|none>` (default 60s); `--wait none` is fire-and-forget.
+- **run-until `<file>:<line>`** — Set a breakpoint and continue in one call. Returns the stop snapshot and the breakpoint that was set. `--wait` as above.
+- **step** — `--in` / `--over` (default) / `--out`. `--wait` (default 30s).
+- **interrupt** — Pause a running session. `--wait` (default 10s).
+- **wait** — Block until the session leaves `running` (stops or terminates). Pair with the fire-and-forget verbs. `--timeout <seconds>` (default 60).
 
 ### Inspection
 - **bt** — Structured backtrace (`--thread`, `--depth`).
@@ -91,7 +92,7 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 
 ### System
 - **daemon** — Run the background daemon (normally auto-spawned).
-- **doctor** — Verify `lldb-dap` is available, socket is writable, no other daemon is running.
+- **doctor** — Diagnose env: `lldb-dap` resolves via xcrun, socket dir is writable, daemon socket is reachable (does NOT auto-spawn). Exits non-zero on any failure so it fits in shell scripts.
 - **mcp** — Start MCP server. `--setup` prints integration instructions.
 
 ## Output contract
@@ -125,5 +126,5 @@ swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
 ## Milestones
 
 - **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
-- **M2 ✓:** full v0.1 verb surface shipped — `attach` (incl. `--app <bundle-id>` for the booted iOS Simulator via `xcrun simctl`), `interrupt`, `threads`, `step`, `expr`, `break list/delete`, `run-until`, Simulator resolver.
+- **M2 ✓:** full v0.1 verb surface shipped — `attach` (incl. `--app <bundle-id>` for the booted iOS Simulator via `xcrun simctl`), `interrupt`, `threads`, `step`, `expr`, `break list/delete`, `run-until`, `wait`, Simulator resolver. All execution verbs accept `--wait <seconds|none>` with fire-and-forget mode for interactive UI debugging.
 - **M3:** Brew tap + mise + release automation.

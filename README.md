@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 16 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 17 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -24,9 +24,9 @@ The daemon auto-spawns on first call. The binary stops on entry so the next call
 ### 2. Set a breakpoint and run until it hits — one call
 
 ```bash
-llmdb run-until ./Sources/Fixture/main.swift:34
+llmdb run-until ./Sources/Fixture/main.swift:35
 {
-  "breakpoint" : { "id" : 1, "line" : 34, "verified" : true, ... },
+  "breakpoint" : { "id" : 1, "line" : 35, "verified" : true, ... },
   "snapshot"   : {
     "state" : "stopped",
     "stopReason" : { "reason" : "breakpoint", "hitBreakpointIDs" : [1], ... }
@@ -34,15 +34,15 @@ llmdb run-until ./Sources/Fixture/main.swift:34
 }
 ```
 
-`run-until` composes `break set` + `continue` for the most common agent flow. Use the two separately when you want to inspect between.
+`run-until` composes `break set` + `continue` for the most common agent flow. Use the two separately when you want to inspect between. For interactive UI apps where the user might take any amount of time to trigger the breakpoint, pass `--wait none` to fire and return immediately, then call `llmdb wait` to block until the stop arrives.
 
 ### 3. Inspect — backtrace and typed locals
 
 ```bash
 llmdb bt --depth 3
 { "frames" : [
-    { "name" : "compute(x:y:)", "line" : 34, "source" : ".../main.swift", ... },
-    { "name" : "llmdb_fixture_main", "line" : 62, ... },
+    { "name" : "compute(x:y:)", "line" : 35, "source" : ".../main.swift", ... },
+    { "name" : "llmdb_fixture_main", "line" : 63, ... },
     { "name" : "start", "source" : "/usr/lib/dyld`start", ... }
 ]}
 ```
@@ -171,12 +171,15 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 
 ### Execution
 
+All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `continue` 60s, `step` 30s, `interrupt` 10s, `run-until` 60s. `--wait none` (or `--wait 0`) is fire-and-forget — the target starts running and the call returns immediately; pair with `wait` to block later.
+
 | Command | Description | Key options |
 |---|---|---|
-| `continue` | Resume until the next stop | — |
-| `run-until <file>:<line>` | `break set` + `continue` in one call | — |
-| `step` | Step one source line | `--over` (default), `--in`, `--out` |
-| `interrupt` | Pause a running session | — |
+| `continue` | Resume until the next stop | `--wait <seconds\|none>` |
+| `run-until <file>:<line>` | `break set` + `continue` in one call | `--wait <seconds\|none>` |
+| `step` | Step one source line | `--over` (default), `--in`, `--out`; `--wait` |
+| `interrupt` | Pause a running session | `--wait <seconds\|none>` |
+| `wait` | Block until the session leaves `running` | `--timeout <seconds>` (default 60) |
 
 ### Inspection
 
