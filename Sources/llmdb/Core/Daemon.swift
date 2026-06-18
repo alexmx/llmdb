@@ -16,6 +16,7 @@ import Foundation
 ///   break.list    { sessionId? }                                → { breakpoints }
 ///   break.delete  { sessionId?, id }                            → { breakpoints }
 ///   continue      { sessionId? }                                → SessionSnapshot
+///   run-until     { sessionId?, file, line }                    → { snapshot, breakpoint }
 ///   interrupt     { sessionId? }                                → SessionSnapshot
 ///   step          { sessionId?, granularity: in|over|out }      → SessionSnapshot
 ///   bt            { sessionId?, depth? }                        → { frames }
@@ -188,6 +189,13 @@ public final class Daemon: @unchecked Sendable {
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)
                 let snap = try await manager.continueExecution(sessionId: p.sessionId)
                 return encodeOK(id: requestID, result: snap)
+
+            case "run-until":
+                let p = try JSONDecoder().decode(RunUntilParams.self, from: paramsData)
+                let (snap, bp) = try await manager.runUntil(
+                    sessionId: p.sessionId, file: p.file, line: p.line
+                )
+                return encodeOK(id: requestID, result: RunUntilResult(snapshot: snap, breakpoint: bp))
 
             case "interrupt":
                 let p = try JSONDecoder().decode(SessionParams.self, from: paramsData)

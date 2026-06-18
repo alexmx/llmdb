@@ -8,7 +8,7 @@ enum LlmdbTools {
         [
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete,
-            continueExec, interrupt, step,
+            continueExec, runUntil, interrupt, step,
             backtrace, locals, threads, expr
         ]
     }
@@ -128,6 +128,17 @@ enum LlmdbTools {
         description: "Continue execution; returns when the target stops again, with stopReason."
     ) { (args: SessionToolArgs) in
         try await callJSON("continue", SessionParams(sessionId: args.session_id), SessionSnapshot.self)
+    }
+
+    static let runUntil = MCPTool(
+        name: "llmdb_run_until",
+        description: "One-call composite of llmdb_break_set + llmdb_continue. Set a breakpoint at file:line, continue, return the stop snapshot and the breakpoint that was set. Prefer this over the two-call form when the agent's intent is `run my program until it gets here`."
+    ) { (args: BreakSetToolArgs) in
+        try await callJSON(
+            "run-until",
+            RunUntilParams(sessionId: args.session_id, file: args.file, line: args.line),
+            RunUntilResult.self
+        )
     }
 
     static let interrupt = MCPTool(

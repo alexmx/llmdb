@@ -79,9 +79,9 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 
 ### Execution
 - **continue** — Resume until next stop.
+- **run-until `<file>:<line>`** — Set a breakpoint and continue in one call. Returns the stop snapshot and the breakpoint that was set.
 - **step** — `--in` / `--over` (default) / `--out`.
 - **interrupt** — Pause a running session.
-- **run-until** — deferred.
 
 ### Inspection
 - **bt** — Structured backtrace (`--thread`, `--depth`).
@@ -125,5 +125,5 @@ swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
 ## Milestones
 
 - **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
-- **M2 (current):** attach flow + inspection round-out shipped (`attach`, `interrupt`, `threads`, `step`, `expr`, `break list`, `break delete`). Remaining: `run-until`, iOS Simulator app-id resolver.
+- **M2 (current):** attach flow + inspection round-out + `run-until` shipped. Remaining: iOS Simulator app-id resolver.
 - **M3:** Brew tap + mise + release automation.

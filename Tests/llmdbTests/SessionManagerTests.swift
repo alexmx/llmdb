@@ -81,6 +81,30 @@ struct SessionManagerIntegrationTests {
         #expect(await manager.list().isEmpty)
     }
 
+    @Test("run-until composes break.set + continue in one call")
+    func runUntilCompositeVerb() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+
+        let launchSnap = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+
+        let (stopSnap, bp) = try await manager.runUntil(
+            sessionId: launchSnap.sessionId,
+            file: paths.fixtureSource,
+            line: 34
+        )
+        #expect(stopSnap.state == .stopped)
+        #expect(stopSnap.stopReason?.reason == "breakpoint")
+        #expect(bp.verified == true)
+        #expect(bp.line == 34)
+
+        // We should be inside compute() — same state as the longer test reaches.
+        let frames = try await manager.backtrace(sessionId: launchSnap.sessionId)
+        #expect(frames.first?.name.contains("compute") == true)
+
+        _ = try await manager.stop(sessionId: launchSnap.sessionId)
+    }
+
     @Test("attach to a running process + interrupt + stop")
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()

@@ -6,7 +6,7 @@ A macOS CLI tool and MCP server that wraps `lldb-dap` to give AI agents a struct
 
 ## Status
 
-Pre-alpha. M1 done. M2 in progress — attach flow (`attach`, `interrupt`, `threads`, `step`) and inspection round-out (`expr`, `break list`, `break delete`) shipped. `run-until` and iOS Simulator resolver still to land.
+Pre-alpha. M1 done. M2 in progress — attach flow (`attach`, `interrupt`, `threads`, `step`), inspection round-out (`expr`, `break list`, `break delete`), and `run-until` all shipped. Last piece: iOS Simulator app-id resolver.
 
 ## Install
 

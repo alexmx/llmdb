@@ -70,6 +70,12 @@ struct BreakSetParams: Codable, Sendable {
     let line: Int
 }
 
+/// `run-until` uses the same shape as `break.set` — set a BP and continue.
+typealias RunUntilParams = BreakSetParams
+
+/// Same shape as BreakSetResult: post-continue snapshot + the BP that was set.
+typealias RunUntilResult = BreakSetResult
+
 struct BtParams: Codable, Sendable {
     let sessionId: String?
     let threadId: Int?

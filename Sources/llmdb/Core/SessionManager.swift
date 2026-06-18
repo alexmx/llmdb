@@ -98,6 +98,19 @@ actor SessionManager {
         try await runUntilStop(sessionId: sessionId, command: "continue", timeout: 60)
     }
 
+    /// Set a breakpoint and continue in one call. Returns the post-continue
+    /// snapshot (stopped at the breakpoint, hopefully) plus the breakpoint
+    /// itself so the caller can clean it up later.
+    func runUntil(
+        sessionId: String?,
+        file: String,
+        line: Int
+    ) async throws -> (SessionSnapshot, Breakpoint) {
+        let (_, bp) = try await setBreakpoint(sessionId: sessionId, file: file, line: line)
+        let snap = try await continueExecution(sessionId: sessionId)
+        return (snap, bp)
+    }
+
     /// Pause a running session. Returns once the target is stopped.
     func interrupt(sessionId: String?) async throws -> SessionSnapshot {
         try await runUntilStop(sessionId: sessionId, command: "pause", timeout: 10)
