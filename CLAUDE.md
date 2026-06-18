@@ -1,130 +1,80 @@
 # llmdb
 
-## What is llmdb?
+macOS CLI + MCP server wrapping `lldb-dap` to give AI agents a structured, session-oriented debugger. Verbs return JSON; sessions persist across invocations via a background daemon. See `README.md` for the user-facing verb reference.
 
-llmdb is a macOS CLI tool and MCP server that wraps `lldb-dap` to give AI agents a structured, session-oriented debugger for macOS and iOS Simulator apps. Verbs return JSON; sessions persist across CLI invocations via a background daemon.
-
-## Project Structure
+## Project structure
 
 ```
 llmdb/
-├── Package.swift                    # SPM manifest (macOS 15+, Swift 6.2)
-├── Sources/llmdb/
-│   ├── llmdb.swift                  # @main entry point, registers all subcommands
-│   ├── Version.swift
-│   ├── Commands/                    # One file per CLI command
-│   ├── Core/                        # DAP client, session manager, daemon client, sim resolver
-│   ├── Models/                      # Session, StopReason, Frame, etc.
-│   ├── MCP/
-│   │   └── LlmdbTools.swift         # MCP tool definitions, mirror CLI 1:1
-│   └── Utilities/                   # Output formatting, error types
+├── Package.swift              # SPM manifest (macOS 15+, Swift 6.2)
+├── .llmdb-version             # release version; CI reads this on push to main
+├── Sources/
+│   ├── llmdb/
+│   │   ├── llmdb.swift        # @main, registers subcommands
+│   │   ├── Version.swift      # CI-generated on release; "dev" locally
+│   │   ├── Commands/          # One file per CLI verb
+│   │   ├── Core/              # DAPClient, SessionManager, Daemon, DaemonClient, SimulatorResolver
+│   │   ├── Models/            # Session, StopReason, Frame, Breakpoint, Thread, …
+│   │   ├── MCP/LlmdbTools.swift  # MCP tools, 1:1 with CLI
+│   │   └── Utilities/         # OutputFormat, JSONOutput, error types, WaitSpec
+│   └── Fixture/main.swift     # llmdb-fixture — see Fixture below
 └── Tests/llmdbTests/
 ```
 
-## Build & Run
+## Build & test
 
 ```bash
 swift build
+swift test
 swift run llmdb <command> [options]
 ```
 
-**Requirements:** macOS 15+, Swift 6.2, Xcode toolchain (for `lldb-dap`).
+Requirements: macOS 15+, Swift 6.2, Xcode toolchain (for `lldb-dap`).
 
-**Dependencies:**
-- `swift-argument-parser` — CLI argument parsing
-- `swift-cli-mcp` — MCP server framework
-- `swift-subprocess` — async subprocess (for `lldb-dap` and `xcrun simctl`)
-- `toon-swift` — token-optimized output format for LLM consumers
+Deps: `swift-argument-parser`, `swift-cli-mcp`, `swift-subprocess`, `toon-swift`.
 
 ## Architecture
 
-- **`llmdb daemon`** runs the background process. Lives at `~/Library/Caches/llmdb/llmdbd.sock` by default; override with `LLMDB_SOCKET_PATH=…` for isolated daemons (e.g., two MCP-driven agents that shouldn't share sessions — set a distinct path in each agent's environment and they each get their own daemon, with full session/state isolation). Owns the set of active debug sessions and their `lldb-dap` children.
-- **CLI commands** auto-spawn the daemon on first use, then JSON-RPC over the socket. Pass `--session <id>` when multiple are active.
-- **`llmdb mcp`** is another client of the daemon (or embeds the same Core directly — TBD).
-- **`Core/DAPClient`** speaks Debug Adapter Protocol (Content-Length-framed JSON over stdio) to `lldb-dap`.
-- **`Core/SessionManager`** tracks sessions, multiplexes DAP events back to subscribers.
-- **`Core/SimulatorResolver`** wraps `xcrun simctl` for iOS Simulator app-id → PID resolution.
+- **`llmdbd`** — Unix-socket JSON-RPC server at `~/Library/Caches/llmdb/llmdbd.sock`. Owns sessions and their `lldb-dap` children. Auto-spawned by CLI/MCP on first call. Set `LLMDB_SOCKET_PATH=…` to give an agent its own daemon (e.g. per-MCP-server isolation).
+- **`DAPClient`** speaks DAP (Content-Length JSON over stdio) to one `lldb-dap` per session. Event fan-out lives here: each subscriber gets its own `AsyncStream` via `client.events()` / `client.waitForEvent(...)`. Do not re-introduce a single-consumer model — the listener and per-call waiters share the stream.
+- **`SessionManager`** orchestrates the DAP handshake, tracks the most recent stop, exposes the high-level verbs.
+- **`SimulatorResolver`** wraps `xcrun simctl` for `bundle-id → host PID`.
 
-## Version Management & Releases
-
-**Version Source:** `.llmdb-version` file in repo root (when added).
-
-- `Sources/llmdb/Version.swift` defines `llmdbVersion` (defaults to "dev" for local builds).
-- GitHub Actions will read `.llmdb-version`, regenerate `Version.swift`, build a universal binary, publish a GitHub release, and bump the Homebrew formula. Workflow TBD.
-
-**Distribution (planned):**
-
-```bash
-brew tap alexmx/tools
-brew install llmdb
-
-# or
-mise use --global github:alexmx/llmdb
-```
-
-## Commands (v0.1 target)
-
-All commands accept `--format json|toon|plain` (default JSON, matching agent-first orientation).
-
-### Lifecycle
-- **launch** — Launch a binary under `lldb-dap`. Stops on entry; returns `sessionId`, `state`, `stopReason`.
-- **attach** — `--pid N` (host PID) or `--app <bundle-id>` (resolves a bundle ID running in the booted iOS Simulator to a host PID via `xcrun simctl`). lldb-dap pauses on attach.
-- **stop** — Detach/terminate a session.
-- **sessions** — List active sessions.
-
-### Breakpoints
-- **break set** — `<file>:<line>`. `--symbol`/`--regex` deferred.
-- **break list** — All breakpoints in the session.
-- **break delete <id>** — Remove one; returns the surviving breakpoints.
-
-### Execution
-- **continue** — Resume until next stop. `--wait <seconds|none>` (default 60s); `--wait none` is fire-and-forget.
-- **run-until `<file>:<line>`** — Set a breakpoint and continue in one call. Returns the stop snapshot and the breakpoint that was set. `--wait` as above.
-- **step** — `--in` / `--over` (default) / `--out`. `--wait` (default 30s).
-- **interrupt** — Pause a running session. `--wait` (default 10s).
-- **wait** — Block until the session leaves `running` (stops or terminates). Pair with the fire-and-forget verbs. `--timeout <seconds>` (default 60).
-
-### Inspection
-- **bt** — Structured backtrace (`--thread`, `--depth`).
-- **locals** — Typed locals for a frame.
-- **threads** — List threads.
-- **expr `<expression>`** — Evaluate in the context of a frame. Uses lldb's `watch` formatting (clean value, not REPL prefix).
-
-### System
-- **daemon** — Run the background daemon (normally auto-spawned).
-- **doctor** — Diagnose env: `lldb-dap` resolves via xcrun, socket dir is writable, daemon socket is reachable (does NOT auto-spawn). Exits non-zero on any failure so it fits in shell scripts.
-- **mcp** — Start MCP server. `--setup` prints integration instructions.
-
-## Output contract
-
-Every verb returns `{session_id, state, stop_reason?, thread?, frame?, ...payload}` so the agent always knows where it is without a follow-up call.
-
-## Adding a New Command
-
-1. Create `Sources/llmdb/Commands/NewCommand.swift` implementing `AsyncParsableCommand`.
-2. Register it in `llmdb.swift`.
-3. Put business logic in `Core/` (DAP/session-aware) or `Utilities/` (pure).
-4. Mirror it as an MCP tool in `MCP/LlmdbTools.swift`.
-5. Add any new model types under `Models/`.
-
-## Formatting
-
-```bash
-swiftformat .
-```
+Every verb returns `{sessionId, state, stopReason?, …}` so the agent always knows where it is. Execution verbs (continue/step/interrupt/run-until) accept `wait` (seconds, default per-verb; `0` = fire-and-forget — pair with the `wait` verb).
 
 ## Fixture
 
-`Sources/Fixture/main.swift` builds as the `llmdb-fixture` executable — a deterministic guinea-pig binary used to exercise the debugger from tests and during manual development. Five canonical breakpoint targets are documented at the top of `main.swift`; **do not renumber** without updating the comment (and any tests that reference them).
+`Sources/Fixture/main.swift` is a deterministic guinea-pig binary used by tests + the smoke harness. Five canonical breakpoint targets are documented at the top of the file. **Do not renumber** — tests hard-code the line numbers, and the file is pinned with `// swiftformat:disable all` because the formatter was collapsing `let x = …; return x` patterns and shifting lines.
 
 ```bash
-swift build
-swift run llmdb-fixture quick    # exits in <100ms, for launch/break/continue tests
-swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
+swift run llmdb-fixture quick    # <100ms, launch/break/continue path
+swift run llmdb-fixture attach   # 30s sleep with PID printed, attach path
 ```
 
-## Milestones
+## Smoke harness
 
-- **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
-- **M2 ✓:** full v0.1 verb surface shipped — `attach` (incl. `--app <bundle-id>` for the booted iOS Simulator via `xcrun simctl`), `interrupt`, `threads`, `step`, `expr`, `break list/delete`, `run-until`, `wait`, Simulator resolver. All execution verbs accept `--wait <seconds|none>` with fire-and-forget mode for interactive UI debugging.
-- **M3:** Brew tap + mise + release automation.
+`scratch/mcp-smoke.py` drives the full MCP surface end-to-end via stdio JSON-RPC. Run after touching the MCP layer or adding/renaming a tool. Updates `tools/list` count assertion if the tool set changes.
+
+## Adding a new command
+
+1. `Sources/llmdb/Commands/NewCommand.swift` implementing `AsyncParsableCommand`.
+2. Register in `llmdb.swift`.
+3. Business logic in `Core/` (DAP/session-aware) or `Utilities/` (pure).
+4. Mirror in `MCP/LlmdbTools.swift` — keep descriptions tight, agent-actionable, standard `session_id` hint.
+5. Add models under `Models/`.
+6. Update `scratch/mcp-smoke.py`.
+
+## Releases
+
+`.llmdb-version` is the source of truth. Pushing a change to `main` triggers `.github/workflows/release.yml`:
+
+1. regenerates `Sources/llmdb/Version.swift` from `.llmdb-version`
+2. builds a universal macOS binary (arm64 + x86_64)
+3. tags `v<version>`, publishes a GitHub release with the zip + SHA256
+4. updates `alexmx/homebrew-tools/Formula/llmdb.rb` with the new URL + SHA256
+
+Users install via `brew install alexmx/tools/llmdb` or `mise use github:alexmx/llmdb`.
+
+## Formatting
+
+`swiftformat .` — fixture is excluded via in-file directive (do not remove).
