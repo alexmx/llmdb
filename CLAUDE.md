@@ -68,7 +68,7 @@ All commands accept `--format json|toon|plain` (default JSON, matching agent-fir
 
 ### Lifecycle
 - **launch** — Launch a binary under `lldb-dap`. Stops on entry; returns `sessionId`, `state`, `stopReason`.
-- **attach** — Attach to a running process by `--pid`. lldb-dap pauses on attach. `--app <bundle-id>` (Simulator) deferred to a later slice.
+- **attach** — `--pid N` (host PID) or `--app <bundle-id>` (resolves a bundle ID running in the booted iOS Simulator to a host PID via `xcrun simctl`). lldb-dap pauses on attach.
 - **stop** — Detach/terminate a session.
 - **sessions** — List active sessions.
 
@@ -125,5 +125,5 @@ swift run llmdb-fixture attach   # sleeps 30s mid-run, for attach --pid tests
 ## Milestones
 
 - **M1 ✓:** daemon + `launch`, `break set`, `continue`, `bt`, `locals` end-to-end on the fixture binary.
-- **M2 (current):** attach flow + inspection round-out + `run-until` shipped. Remaining: iOS Simulator app-id resolver.
+- **M2 ✓:** full v0.1 verb surface shipped — `attach` (incl. `--app <bundle-id>` for the booted iOS Simulator via `xcrun simctl`), `interrupt`, `threads`, `step`, `expr`, `break list/delete`, `run-until`, Simulator resolver.
 - **M3:** Brew tap + mise + release automation.

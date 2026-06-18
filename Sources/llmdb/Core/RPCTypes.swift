@@ -56,8 +56,10 @@ struct LaunchParams: Codable, Sendable {
     let args: [String]?
 }
 
+/// Attach by PID OR by iOS Simulator bundle ID. Exactly one must be set.
 struct AttachParams: Codable, Sendable {
-    let pid: Int32
+    let pid: Int32?
+    let app: String?
 }
 
 struct SessionParams: Codable, Sendable {

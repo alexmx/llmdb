@@ -10,7 +10,9 @@ import Foundation
 ///
 /// Methods:
 ///   launch        { binary: String, args: [String] }            → SessionSnapshot
-///   attach        { pid: Int32 }                                → SessionSnapshot
+///   attach        { pid?: Int32, app?: String }                 → SessionSnapshot
+///                 // exactly one of pid/app; `app` resolves a bundle ID in
+///                 // the booted iOS Simulator to a host PID via simctl.
 ///   sessions      {}                                            → [Session]
 ///   break.set     { sessionId?, file, line }                    → { snapshot, breakpoint }
 ///   break.list    { sessionId? }                                → { breakpoints }
@@ -161,7 +163,22 @@ public final class Daemon: @unchecked Sendable {
 
             case "attach":
                 let p = try JSONDecoder().decode(AttachParams.self, from: paramsData)
-                let snap = try await manager.attach(pid: p.pid)
+                let pid: Int32
+                switch (p.pid, p.app) {
+                case (let explicitPID?, nil):
+                    pid = explicitPID
+                case (nil, let bundleID?):
+                    pid = try await SimulatorResolver.resolvePID(bundleID: bundleID)
+                case (nil, nil):
+                    throw LlmdbError.invalidArgument(
+                        name: "attach", value: "(nothing)", valid: ["pid", "app"]
+                    )
+                case (_, _):
+                    throw LlmdbError.invalidArgument(
+                        name: "attach", value: "both pid and app", valid: ["one of pid or app"]
+                    )
+                }
+                let snap = try await manager.attach(pid: pid)
                 return encodeOK(id: requestID, result: snap)
 
             case "sessions":

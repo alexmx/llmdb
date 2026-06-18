@@ -26,7 +26,8 @@ struct DaemonClient: Sendable {
         let responseLine = try readLine(fd: fd)
         let envelope = try JSONDecoder().decode(RPCResponse<Result>.self, from: responseLine)
         if let error = envelope.error {
-            throw LlmdbError.daemonUnreachable(error)
+            // Daemon-originated error — pass through without our own prefix.
+            throw LlmdbError.remote(error)
         }
         guard let result = envelope.result else {
             throw LlmdbError.daemonUnreachable("daemon returned no result and no error")

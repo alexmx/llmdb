@@ -6,7 +6,7 @@ A macOS CLI tool and MCP server that wraps `lldb-dap` to give AI agents a struct
 
 ## Status
 
-Pre-alpha. M1 done. M2 in progress — attach flow (`attach`, `interrupt`, `threads`, `step`), inspection round-out (`expr`, `break list`, `break delete`), and `run-until` all shipped. Last piece: iOS Simulator app-id resolver.
+Pre-alpha. v0.1 verb surface complete (M1 + M2). 15 CLI verbs / 15 MCP tools wired through the `llmdbd` Unix-socket daemon. iOS Simulator app debugging works via `llmdb attach --app <bundle-id>`. Next up: M3 — Brew tap + mise + release automation.
 
 ## Install
 

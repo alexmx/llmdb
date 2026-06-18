@@ -23,8 +23,10 @@ enum LlmdbTools {
     }
 
     struct AttachToolArgs: MCPToolInput {
-        @InputProperty("Process ID to attach to")
-        var pid: Int
+        @InputProperty("Process ID to attach to (mutually exclusive with `app`)")
+        var pid: Int?
+        @InputProperty("Bundle ID of an app running in the booted iOS Simulator — resolved via xcrun simctl (mutually exclusive with `pid`)")
+        var app: String?
     }
 
     struct SessionToolArgs: MCPToolInput {
@@ -93,9 +95,13 @@ enum LlmdbTools {
 
     static let attach = MCPTool(
         name: "llmdb_attach",
-        description: "Attach to a running process by PID. lldb-dap pauses the target on attach; returns {sessionId, state, stopReason}."
+        description: "Attach to a running process. Pass `pid` for a host PID, or `app` for an iOS Simulator bundle ID (resolved via xcrun simctl in the currently booted simulator). Exactly one. lldb-dap pauses the target on attach."
     ) { (args: AttachToolArgs) in
-        try await callJSON("attach", AttachParams(pid: Int32(args.pid)), SessionSnapshot.self)
+        try await callJSON(
+            "attach",
+            AttachParams(pid: args.pid.map { Int32($0) }, app: args.app),
+            SessionSnapshot.self
+        )
     }
 
     static let stop = MCPTool(
