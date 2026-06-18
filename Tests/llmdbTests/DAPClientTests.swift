@@ -32,7 +32,7 @@ struct DAPClientIntegrationTests {
 
         _ = try await client.request("setBreakpoints", arguments: SetBreakpointsArgs(
             source: SourceArg(path: paths.fixtureSource),
-            breakpoints: [BPLine(line: 34)]
+            breakpoints: [BPLine(line: 35)]
         ))
 
         _ = try await client.request("configurationDone")
@@ -52,7 +52,7 @@ struct DAPClientIntegrationTests {
         #expect(!stack.stackFrames.isEmpty)
         let topFrame = stack.stackFrames[0]
         #expect(topFrame.name.contains("compute"))
-        #expect(topFrame.line == 34)
+        #expect(topFrame.line == 35)
 
         let scopesResp = try await client.request("scopes", arguments: ScopesArgs(frameId: topFrame.id))
         let scopes = try scopesResp.decodeBody(ScopesBody.self)

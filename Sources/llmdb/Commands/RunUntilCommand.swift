@@ -10,6 +10,9 @@ struct RunUntilCommand: AsyncParsableCommand {
     @Argument(help: "Location: `<file>:<line>`")
     var location: String
 
+    @Option(name: .long, help: "Wait seconds (default 60), or 'none' for fire-and-forget")
+    var wait: WaitSpec?
+
     @Option(name: .long, help: "Session ID")
     var session: String?
 
@@ -20,7 +23,7 @@ struct RunUntilCommand: AsyncParsableCommand {
         let (file, line) = try parseFileLineLocation(location)
         let result = try await DaemonClient.call(
             method: "run-until",
-            params: BreakSetParams(sessionId: session, file: file, line: line),
+            params: RunUntilParams(sessionId: session, file: file, line: line, wait: wait?.wireValue),
             as: BreakSetResult.self
         )
         try JSONOutput.print(result)

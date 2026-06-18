@@ -82,19 +82,24 @@ actor SessionManager {
         guard let bp = body.breakpoints.first else {
             throw LlmdbError.dapFailure("setBreakpoints returned no breakpoint")
         }
+        // Stock message for unverified BPs so callers don't panic at `verified: false`.
+        let message = bp.message ?? (bp.verified
+            ? nil
+            :
+            "verification deferred until module loads — common for breakpoints set before launch or in lazily-loaded modules")
         let model = Breakpoint(
             id: bp.id ?? 0,
             verified: bp.verified,
             line: bp.line,
             source: bp.source?.path ?? file,
-            message: bp.message
+            message: message
         )
         if let bid = bp.id { entry.breakpoints[bid] = model }
         return (snapshot(entry), model)
     }
 
-    func continueExecution(sessionId: String?) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: "continue", timeout: 60)
+    func continueExecution(sessionId: String?, wait: Double? = nil) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: "continue", wait: wait ?? 60)
     }
 
     /// Set a breakpoint and continue in one call. Returns the post-continue
@@ -103,37 +108,62 @@ actor SessionManager {
     func runUntil(
         sessionId: String?,
         file: String,
-        line: Int
+        line: Int,
+        wait: Double? = nil
     ) async throws -> (SessionSnapshot, Breakpoint) {
         let (_, bp) = try await setBreakpoint(sessionId: sessionId, file: file, line: line)
-        let snap = try await continueExecution(sessionId: sessionId)
+        let snap = try await continueExecution(sessionId: sessionId, wait: wait)
         return (snap, bp)
     }
 
     /// Pause a running session. Returns once the target is stopped.
-    func interrupt(sessionId: String?) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: "pause", timeout: 10)
+    func interrupt(sessionId: String?, wait: Double? = nil) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: "pause", wait: wait ?? 10)
     }
 
     /// Step one source line. `granularity` picks the DAP command:
     /// `.over` → next, `.in` → stepIn, `.out` → stepOut.
-    func step(sessionId: String?, granularity: StepGranularity) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: granularity.dapCommand, timeout: 30)
+    func step(
+        sessionId: String?,
+        granularity: StepGranularity,
+        wait: Double? = nil
+    ) async throws -> SessionSnapshot {
+        try await runUntilStop(sessionId: sessionId, command: granularity.dapCommand, wait: wait ?? 30)
     }
 
-    /// Send a single-thread execution command (continue/pause/next/stepIn/stepOut)
-    /// and return when the next stop / termination event arrives.
+    /// Block until the session leaves `.running` (i.e., stops or terminates).
+    /// Returns immediately if already stopped/terminated.
+    func wait(sessionId: String?, timeout: Double? = nil) async throws -> SessionSnapshot {
+        let entry = try resolve(sessionId)
+        if entry.info.state != .running {
+            return snapshot(entry)
+        }
+        let waiter = await entry.client.waitForEvent(timeout: timeout ?? 60) {
+            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+        }
+        _ = try await waiter.value
+        return snapshot(entry)
+    }
+
+    /// `wait == 0` → fire-and-forget; otherwise block up to `wait` seconds.
     private func runUntilStop(
         sessionId: String?,
         command: String,
-        timeout: TimeInterval
+        wait: Double
     ) async throws -> SessionSnapshot {
         let entry = try resolve(sessionId)
         let threadId = entry.stoppedThreadId ?? 1
-        // Subscribe BEFORE sending the request so we don't miss the stop.
-        // The listener writes entry.info.state — by the time the waiter
-        // returns, state has been updated.
-        let waiter = await entry.client.waitForEvent(timeout: timeout) {
+
+        if wait == 0 {
+            _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
+            // Optimistic — listener overwrites when the real continued/stopped event lands.
+            entry.info.state = .running
+            entry.info.stopReason = nil
+            return snapshot(entry)
+        }
+
+        // Subscribe BEFORE sending so we don't miss the stop.
+        let waiter = await entry.client.waitForEvent(timeout: wait) {
             $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
         }
         _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))

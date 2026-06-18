@@ -8,13 +8,38 @@ enum LlmdbTools {
         [
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete,
-            continueExec, runUntil, interrupt, step,
+            continueExec, runUntil, interrupt, step, wait,
             backtrace, locals, threads, expr,
-            doctor,
+            doctor
         ]
     }
 
     struct DoctorToolArgs: MCPToolInput {}
+
+    struct ExecToolArgs: MCPToolInput {
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+        @InputProperty("Seconds to wait for next stop. Omit for default (60s continue / 10s interrupt / 30s step). 0 = fire-and-forget — pair with llmdb_wait.")
+        var wait: Double?
+    }
+
+    struct WaitToolArgs: MCPToolInput {
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+        @InputProperty("Timeout in seconds (default 60)")
+        var timeout: Double?
+    }
+
+    struct RunUntilToolArgs: MCPToolInput {
+        @InputProperty("Source file path")
+        var file: String
+        @InputProperty("Line number")
+        var line: Int
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+        @InputProperty("Seconds to wait for the BP to hit. Omit for 60s default; 0 = fire-and-forget.")
+        var wait: Double?
+    }
 
     // MARK: - Args
 
@@ -26,11 +51,9 @@ enum LlmdbTools {
     }
 
     struct AttachToolArgs: MCPToolInput {
-        @InputProperty("Process ID to attach to (mutually exclusive with `app`)")
+        @InputProperty("Host PID. Mutually exclusive with `app`.")
         var pid: Int?
-        @InputProperty(
-            "Bundle ID of an app running in the booted iOS Simulator — resolved via xcrun simctl (mutually exclusive with `pid`)"
-        )
+        @InputProperty("iOS Simulator bundle ID (resolved via xcrun simctl in the booted sim). Mutually exclusive with `pid`.")
         var app: String?
     }
 
@@ -44,48 +67,50 @@ enum LlmdbTools {
         var file: String
         @InputProperty("Line number")
         var line: Int
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
 
     struct StepToolArgs: MCPToolInput {
-        @InputProperty("Granularity: over (default), in, or out")
+        @InputProperty("over (default), in, or out")
         var granularity: String?
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
+        @InputProperty("Seconds to wait for next stop. Omit for 30s default; 0 = fire-and-forget.")
+        var wait: Double?
     }
 
     struct BtToolArgs: MCPToolInput {
         @InputProperty("Thread ID (defaults to the stopped thread)")
         var thread: Int?
-        @InputProperty("Maximum depth (default: full stack)")
+        @InputProperty("Max frames (default: full stack)")
         var depth: Int?
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
 
     struct LocalsToolArgs: MCPToolInput {
-        @InputProperty("Frame index (default 0)")
+        @InputProperty("Frame index (default 0 = top frame)")
         var frame: Int?
         @InputProperty("Thread ID (defaults to the stopped thread)")
         var thread: Int?
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
 
     struct ExprToolArgs: MCPToolInput {
         @InputProperty("Expression to evaluate (e.g. `self.state.count` or `a + b`)")
         var expression: String
-        @InputProperty("Frame index (default 0, the top frame)")
+        @InputProperty("Frame index (default 0 = top frame)")
         var frame: Int?
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
 
     struct BreakDeleteToolArgs: MCPToolInput {
         @InputProperty("Breakpoint id to delete")
         var id: Int
-        @InputProperty("Session ID")
+        @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
 
@@ -93,14 +118,14 @@ enum LlmdbTools {
 
     static let launch = MCPTool(
         name: "llmdb_launch",
-        description: "Launch a binary under lldb-dap. Stops on entry; returns {sessionId, state, stopReason}."
+        description: "Launch a binary under lldb-dap; stops on entry. Returns sessionId. Next: llmdb_break_set + llmdb_continue, or llmdb_run_until for one call."
     ) { (args: LaunchToolArgs) in
         try await callJSON("launch", LaunchParams(binary: args.binary, args: args.args), SessionSnapshot.self)
     }
 
     static let attach = MCPTool(
         name: "llmdb_attach",
-        description: "Attach to a running process. Pass `pid` for a host PID, or `app` for an iOS Simulator bundle ID (resolved via xcrun simctl in the currently booted simulator). Exactly one. lldb-dap pauses the target on attach."
+        description: "Attach to a running process by host PID, or to an iOS Simulator app by bundle ID (resolved via xcrun simctl in the booted sim). Pass exactly one of pid/app. Target pauses on attach."
     ) { (args: AttachToolArgs) in
         try await callJSON(
             "attach",
@@ -118,14 +143,14 @@ enum LlmdbTools {
 
     static let sessions = MCPTool(
         name: "llmdb_sessions",
-        description: "List active debug sessions."
+        description: "List active debug sessions. Use to find a sessionId or check state after llmdb_continue wait=0."
     ) { (_: SessionToolArgs) in
         try await callJSON("sessions", EmptyParams(), [Session].self)
     }
 
     static let breakSet = MCPTool(
         name: "llmdb_break_set",
-        description: "Set a source breakpoint by file:line. Returns the verified breakpoint and a session snapshot."
+        description: "Set a source breakpoint at file:line. verified=false before the source's module loads is expected — flips true via a later breakpoint event; the response carries an explanatory message field."
     ) { (args: BreakSetToolArgs) in
         try await callJSON(
             "break.set",
@@ -136,44 +161,63 @@ enum LlmdbTools {
 
     static let continueExec = MCPTool(
         name: "llmdb_continue",
-        description: "Continue execution; returns when the target stops again, with stopReason."
-    ) { (args: SessionToolArgs) in
-        try await callJSON("continue", SessionParams(sessionId: args.session_id), SessionSnapshot.self)
+        description: "Resume execution. wait (seconds) blocks until next stop, default 60. wait=0 fires and returns immediately (state=running) — then call llmdb_wait or poll llmdb_sessions. Use wait=0 for interactive UI debugging where the next stop may take any amount of time."
+    ) { (args: ExecToolArgs) in
+        try await callJSON(
+            "continue",
+            ExecParams(sessionId: args.session_id, wait: args.wait),
+            SessionSnapshot.self
+        )
     }
 
     static let runUntil = MCPTool(
         name: "llmdb_run_until",
-        description: "One-call composite of llmdb_break_set + llmdb_continue. Set a breakpoint at file:line, continue, return the stop snapshot and the breakpoint that was set. Prefer this over the two-call form when the agent's intent is `run my program until it gets here`."
-    ) { (args: BreakSetToolArgs) in
+        description: "Set a breakpoint at file:line and continue, in one call. Use when the intent is `run until execution reaches here`. Same wait semantics as llmdb_continue."
+    ) { (args: RunUntilToolArgs) in
         try await callJSON(
             "run-until",
-            BreakSetParams(sessionId: args.session_id, file: args.file, line: args.line),
+            RunUntilParams(sessionId: args.session_id, file: args.file, line: args.line, wait: args.wait),
             BreakSetResult.self
         )
     }
 
     static let interrupt = MCPTool(
         name: "llmdb_interrupt",
-        description: "Pause a running session; returns once stopped."
-    ) { (args: SessionToolArgs) in
-        try await callJSON("interrupt", SessionParams(sessionId: args.session_id), SessionSnapshot.self)
+        description: "Pause a running session. wait default 10s; wait=0 returns immediately."
+    ) { (args: ExecToolArgs) in
+        try await callJSON(
+            "interrupt",
+            ExecParams(sessionId: args.session_id, wait: args.wait),
+            SessionSnapshot.self
+        )
     }
 
     static let step = MCPTool(
         name: "llmdb_step",
-        description: "Step one source line. granularity = over (default) | in | out. Returns when the target stops again."
+        description: "Step one source line. granularity: over (default), in, out. wait default 30s; wait=0 returns immediately."
     ) { (args: StepToolArgs) in
         let g = StepGranularity(rawValue: (args.granularity ?? "over").lowercased()) ?? .over
         return try await callJSON(
             "step",
-            StepParams(sessionId: args.session_id, granularity: g),
+            StepParams(sessionId: args.session_id, granularity: g, wait: args.wait),
+            SessionSnapshot.self
+        )
+    }
+
+    static let wait = MCPTool(
+        name: "llmdb_wait",
+        description: "Block until the session stops or terminates. Returns immediately if already stopped. Pair with continue/step/interrupt wait=0."
+    ) { (args: WaitToolArgs) in
+        try await callJSON(
+            "wait",
+            WaitParams(sessionId: args.session_id, timeout: args.timeout),
             SessionSnapshot.self
         )
     }
 
     static let backtrace = MCPTool(
         name: "llmdb_bt",
-        description: "Structured backtrace for the stopped thread."
+        description: "Structured backtrace for the stopped thread. Call after a stop event to see where execution is."
     ) { (args: BtToolArgs) in
         try await callJSON(
             "bt",
@@ -184,7 +228,7 @@ enum LlmdbTools {
 
     static let locals = MCPTool(
         name: "llmdb_locals",
-        description: "Typed locals for a stack frame (default: top frame)."
+        description: "Typed locals for a stack frame (default frame=0, the top frame). Values are lldb-formatted strings — no extra parsing needed."
     ) { (args: LocalsToolArgs) in
         try await callJSON(
             "locals",
@@ -202,7 +246,7 @@ enum LlmdbTools {
 
     static let expr = MCPTool(
         name: "llmdb_expr",
-        description: "Evaluate an expression in the context of a stack frame (default: top frame). Returns {value, type, variablesReference}. Use after `llmdb_locals` when you need to read a field or call expression that's not in locals."
+        description: "Evaluate an expression in a stack frame (default frame=0). Use when llmdb_locals isn't enough — field access (self.state.count), method calls, arithmetic over locals."
     ) { (args: ExprToolArgs) in
         try await callJSON(
             "expr",
@@ -213,14 +257,14 @@ enum LlmdbTools {
 
     static let breakList = MCPTool(
         name: "llmdb_break_list",
-        description: "List all breakpoints in a session."
+        description: "List breakpoints in the session."
     ) { (args: SessionToolArgs) in
         try await callJSON("break.list", SessionParams(sessionId: args.session_id), BreakListResult.self)
     }
 
     static let breakDelete = MCPTool(
         name: "llmdb_break_delete",
-        description: "Delete a breakpoint by id. Returns the surviving breakpoints."
+        description: "Delete a breakpoint by id. Returns the remaining breakpoints."
     ) { (args: BreakDeleteToolArgs) in
         try await callJSON(
             "break.delete",
@@ -231,7 +275,7 @@ enum LlmdbTools {
 
     static let doctor = MCPTool(
         name: "llmdb_doctor",
-        description: "Diagnose the local llmdb environment: lldb-dap availability, socket directory permissions, daemon reachability. Returns { checks: [{name, ok, detail?}] }. Run before starting a debug session if anything seems off."
+        description: "Diagnose the environment: lldb-dap path, socket dir writable, daemon reachable. Returns checks[]. Run when something seems off."
     ) { (_: DoctorToolArgs) in
         let report = await Doctor.runChecks()
         let encoder = JSONEncoder()

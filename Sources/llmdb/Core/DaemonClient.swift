@@ -7,7 +7,9 @@ import Foundation
 enum DaemonClient {
     /// Re-reads `Daemon.defaultSocketPath` per call so it honors
     /// `LLMDB_SOCKET_PATH` even when the env var is set after import.
-    static var socketPath: String { Daemon.defaultSocketPath }
+    static var socketPath: String {
+        Daemon.defaultSocketPath
+    }
 
     /// Call a method on the daemon. Auto-spawns the daemon on first use.
     static func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(

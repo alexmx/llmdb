@@ -20,10 +20,10 @@ struct SessionManagerIntegrationTests {
         let (_, bp) = try await manager.setBreakpoint(
             sessionId: sessionID,
             file: paths.fixtureSource,
-            line: 34
+            line: 35
         )
         #expect(bp.verified == true)
-        #expect(bp.line == 34)
+        #expect(bp.line == 35)
 
         // 3. continue — runs until BP1 hits
         let stoppedSnap = try await manager.continueExecution(sessionId: sessionID)
@@ -34,7 +34,7 @@ struct SessionManagerIntegrationTests {
         let frames = try await manager.backtrace(sessionId: sessionID)
         #expect(!frames.isEmpty)
         #expect(frames[0].name.contains("compute"))
-        #expect(frames[0].line == 34)
+        #expect(frames[0].line == 35)
 
         // 5. locals
         let locals = try await manager.locals(sessionId: sessionID)
@@ -83,6 +83,42 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func continueFireAndForgetPlusWait() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let sid = launch.sessionId
+        _ = try await manager.setBreakpoint(sessionId: sid, file: paths.fixtureSource, line: 35)
+        // wait: 0 → fire-and-forget. Returns immediately with state=running.
+        let firedSnap = try await manager.continueExecution(sessionId: sid, wait: 0)
+        #expect(firedSnap.state == .running)
+        // wait verb blocks until the BP hits.
+        let stopped = try await manager.wait(sessionId: sid, timeout: 5)
+        #expect(stopped.state == .stopped)
+        #expect(stopped.stopReason?.reason == "breakpoint")
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
+    func unverifiedBreakpointCarriesExplanation() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        // Set a BP in a file the binary doesn't contain → unverified.
+        let (_, bp) = try await manager.setBreakpoint(
+            sessionId: launch.sessionId,
+            file: "/tmp/nonexistent-source.swift",
+            line: 1
+        )
+        #expect(bp.verified == false)
+        #expect(
+            bp.message?.contains("verification deferred") == true,
+            "expected stock unverified message, got: \(bp.message ?? "nil")"
+        )
+        _ = try await manager.stop(sessionId: launch.sessionId)
+    }
+
+    @Test
     func runUntilCompositeVerb() async throws {
         let paths = try fixturePaths()
         let manager = SessionManager()
@@ -92,12 +128,12 @@ struct SessionManagerIntegrationTests {
         let (stopSnap, bp) = try await manager.runUntil(
             sessionId: launchSnap.sessionId,
             file: paths.fixtureSource,
-            line: 34
+            line: 35
         )
         #expect(stopSnap.state == .stopped)
         #expect(stopSnap.stopReason?.reason == "breakpoint")
         #expect(bp.verified == true)
-        #expect(bp.line == 34)
+        #expect(bp.line == 35)
 
         // We should be inside compute() — same state as the longer test reaches.
         let frames = try await manager.backtrace(sessionId: launchSnap.sessionId)

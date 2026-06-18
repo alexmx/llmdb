@@ -68,11 +68,28 @@ struct SessionParams: Codable {
     let sessionId: String?
 }
 
-/// Used by both `break.set` and `run-until` (the latter = set BP + continue).
+/// nil → daemon default; 0 → fire-and-forget; >0 → wait N seconds.
+struct ExecParams: Codable {
+    let sessionId: String?
+    let wait: Double?
+}
+
+struct WaitParams: Codable {
+    let sessionId: String?
+    let timeout: Double?
+}
+
 struct BreakSetParams: Codable {
     let sessionId: String?
     let file: String
     let line: Int
+}
+
+struct RunUntilParams: Codable {
+    let sessionId: String?
+    let file: String
+    let line: Int
+    let wait: Double?
 }
 
 struct BtParams: Codable {
@@ -90,6 +107,7 @@ struct LocalsParams: Codable {
 struct StepParams: Codable {
     let sessionId: String?
     let granularity: StepGranularity
+    let wait: Double?
 }
 
 struct ExprParams: Codable {

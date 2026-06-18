@@ -1,3 +1,4 @@
+// swiftformat:disable all
 import Foundation
 
 // llmdb fixture — a deterministic guinea-pig binary for exercising the debugger.
@@ -5,11 +6,11 @@ import Foundation
 // Canonical breakpoint targets (line numbers are part of the fixture's contract;
 // keep them stable or update the test that references them):
 //
-//   main.swift:34  BP1 — inside compute(), return statement, sum/product/diff/total bound
-//   main.swift:41  BP2 — inside fibonacci(), after both recursive calls (a, b bound)
-//   main.swift:48  BP3 — inside walkArray() loop body, index/item/upper/length bound
-//   main.swift:55  BP4 — inside processOptional(), unwrapped value bound
-//   main.swift:79  BP5 — final exit marker, all top-level locals still alive
+//   main.swift:35  BP1 — inside compute(), return statement, sum/product/diff/total bound
+//   main.swift:42  BP2 — inside fibonacci(), after both recursive calls (a, b bound)
+//   main.swift:49  BP3 — inside walkArray() loop body, index/item/upper/length bound
+//   main.swift:56  BP4 — inside processOptional(), unwrapped value bound
+//   main.swift:80  BP5 — final exit marker, all top-level locals still alive
 //
 // Run modes:
 //   quick   — exits in <100ms; for `llmdb launch ... && break + continue` tests

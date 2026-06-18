@@ -17,10 +17,11 @@ import Foundation
 ///   break.set     { sessionId?, file, line }                    → { snapshot, breakpoint }
 ///   break.list    { sessionId? }                                → { breakpoints }
 ///   break.delete  { sessionId?, id }                            → { breakpoints }
-///   continue      { sessionId? }                                → SessionSnapshot
-///   run-until     { sessionId?, file, line }                    → { snapshot, breakpoint }
-///   interrupt     { sessionId? }                                → SessionSnapshot
-///   step          { sessionId?, granularity: in|over|out }      → SessionSnapshot
+///   continue      { sessionId?, wait? }                         → SessionSnapshot
+///   run-until     { sessionId?, file, line, wait? }             → { snapshot, breakpoint }
+///   interrupt     { sessionId?, wait? }                         → SessionSnapshot
+///   step          { sessionId?, granularity, wait? }            → SessionSnapshot
+///   wait          { sessionId?, timeout? }                      → SessionSnapshot
 ///   bt            { sessionId?, depth? }                        → { frames }
 ///   locals        { sessionId?, frame? }                        → { locals }
 ///   threads       { sessionId? }                                → { threads }
@@ -202,25 +203,32 @@ public final class Daemon: @unchecked Sendable {
                 return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
 
             case "continue":
-                let p = try decode(SessionParams.self)
-                let snap = try await manager.continueExecution(sessionId: p.sessionId)
+                let p = try decode(ExecParams.self)
+                let snap = try await manager.continueExecution(sessionId: p.sessionId, wait: p.wait)
                 return encodeOK(id: requestID, result: snap)
 
             case "run-until":
-                let p = try decode(BreakSetParams.self)
+                let p = try decode(RunUntilParams.self)
                 let (snap, bp) = try await manager.runUntil(
-                    sessionId: p.sessionId, file: p.file, line: p.line
+                    sessionId: p.sessionId, file: p.file, line: p.line, wait: p.wait
                 )
                 return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
 
             case "interrupt":
-                let p = try decode(SessionParams.self)
-                let snap = try await manager.interrupt(sessionId: p.sessionId)
+                let p = try decode(ExecParams.self)
+                let snap = try await manager.interrupt(sessionId: p.sessionId, wait: p.wait)
                 return encodeOK(id: requestID, result: snap)
 
             case "step":
                 let p = try decode(StepParams.self)
-                let snap = try await manager.step(sessionId: p.sessionId, granularity: p.granularity)
+                let snap = try await manager.step(
+                    sessionId: p.sessionId, granularity: p.granularity, wait: p.wait
+                )
+                return encodeOK(id: requestID, result: snap)
+
+            case "wait":
+                let p = try decode(WaitParams.self)
+                let snap = try await manager.wait(sessionId: p.sessionId, timeout: p.timeout)
                 return encodeOK(id: requestID, result: snap)
 
             case "bt":
