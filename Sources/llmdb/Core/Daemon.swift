@@ -49,6 +49,7 @@ public final class Daemon: @unchecked Sendable {
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private let acceptQueue = DispatchQueue(label: "llmdbd-accept")
+    private var signalSources: [DispatchSourceSignal] = []
 
     public init(socketPath: String = Daemon.defaultSocketPath) {
         self.socketPath = socketPath
@@ -85,7 +86,33 @@ public final class Daemon: @unchecked Sendable {
         source.resume()
         acceptSource = source
 
+        installSignalHandlers()
+
         FileHandle.standardError.write(Data("llmdbd listening on \(socketPath)\n".utf8))
+    }
+
+    /// Unlink the socket file on SIGINT/SIGTERM/SIGHUP so `llmdb doctor` doesn't
+    /// later report a stale socket. SIGKILL and segfaults can't be caught;
+    /// `DaemonClient.connectOrSpawn` recovers from those by detecting ECONNREFUSED
+    /// and unlinking before respawning.
+    private func installSignalHandlers() {
+        for sig in [SIGINT, SIGTERM, SIGHUP] {
+            // Default disposition (terminate) fires immediately unless we suppress it
+            // — only then does the dispatch source get a chance to run.
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+            source.setEventHandler { [weak self] in
+                self?.shutdown()
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    private func shutdown() {
+        FileHandle.standardError.write(Data("llmdbd shutting down, unlinking \(socketPath)\n".utf8))
+        _ = Darwin.unlink(socketPath)
+        exit(0)
     }
 
     /// Park the calling async task forever. The dispatch source on its own
