@@ -118,7 +118,7 @@ enum LlmdbTools {
 
     static let launch = MCPTool(
         name: "llmdb_launch",
-        description: "Launch a binary under lldb-dap; stops on entry. Returns sessionId. Next: llmdb_break_set + llmdb_continue, or llmdb_run_until for one call."
+        description: "Launch a binary under lldb-dap; stops on entry. `.app` bundles (or paths inside one) route via LaunchServices so the app registers with AppKit — needed for accessibility / UI automation. Returns sessionId. Next: llmdb_break_set + llmdb_continue, or llmdb_run_until."
     ) { (args: LaunchToolArgs) in
         try await callJSON("launch", LaunchParams(binary: args.binary, args: args.args), SessionSnapshot.self)
     }
@@ -150,7 +150,7 @@ enum LlmdbTools {
 
     static let breakSet = MCPTool(
         name: "llmdb_break_set",
-        description: "Set a source breakpoint at file:line. verified=false before the source's module loads is expected — flips true via a later breakpoint event; the response carries an explanatory message field."
+        description: "Set a source breakpoint at file:line. verified=false before module load is normal — flips true later; the message field explains."
     ) { (args: BreakSetToolArgs) in
         try await callJSON(
             "break.set",

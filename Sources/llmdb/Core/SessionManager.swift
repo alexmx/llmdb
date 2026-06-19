@@ -31,9 +31,15 @@ actor SessionManager {
     }
 
     /// Launch a binary under lldb-dap. Stops on entry so subsequent
-    /// `break set` calls have a quiescent target.
+    /// `break set` calls have a quiescent target. For `.app` bundles, routes
+    /// through LaunchServices so the process is registered with WindowServer/
+    /// AppKit (required for AX-driven tools to see the app).
     func launch(binary: String, args: [String]) async throws -> SessionSnapshot {
-        try await openSession(target: .launched(binary: binary, args: args))
+        if let appURL = AppBundleLauncher.appBundleURL(for: binary) {
+            let pid = try await AppBundleLauncher.openApplication(at: appURL, args: args)
+            return try await attach(pid: pid)
+        }
+        return try await openSession(target: .launched(binary: binary, args: args))
     }
 
     /// Attach to a running process. lldb-dap pauses the target on attach,

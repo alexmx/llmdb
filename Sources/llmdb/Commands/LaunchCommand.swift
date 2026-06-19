@@ -4,7 +4,7 @@ import Foundation
 struct LaunchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "launch",
-        abstract: "Launch a binary under lldb-dap and return a session_id"
+        abstract: "Launch a binary (or .app bundle) under lldb-dap; returns a sessionId. .app bundles route via LaunchServices so AppKit/AX-driven tools see the process."
     )
 
     @Argument(help: "Path to the binary to debug")

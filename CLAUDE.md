@@ -13,7 +13,7 @@ llmdb/
 │   │   ├── llmdb.swift        # @main, registers subcommands
 │   │   ├── Version.swift      # CI-generated on release; "dev" locally
 │   │   ├── Commands/          # One file per CLI verb
-│   │   ├── Core/              # DAPClient, SessionManager, Daemon, DaemonClient, SimulatorResolver
+│   │   ├── Core/              # DAPClient, SessionManager, Daemon, DaemonClient, SimulatorResolver, AppBundleLauncher
 │   │   ├── Models/            # Session, StopReason, Frame, Breakpoint, Thread, …
 │   │   ├── MCP/LlmdbTools.swift  # MCP tools, 1:1 with CLI
 │   │   └── Utilities/         # OutputFormat, JSONOutput, error types, WaitSpec
@@ -39,6 +39,7 @@ Deps: `swift-argument-parser`, `swift-cli-mcp`, `swift-subprocess`, `toon-swift`
 - **`DAPClient`** speaks DAP (Content-Length JSON over stdio) to one `lldb-dap` per session. Event fan-out lives here: each subscriber gets its own `AsyncStream` via `client.events()` / `client.waitForEvent(...)`. Do not re-introduce a single-consumer model — the listener and per-call waiters share the stream.
 - **`SessionManager`** orchestrates the DAP handshake, tracks the most recent stop, exposes the high-level verbs.
 - **`SimulatorResolver`** wraps `xcrun simctl` for `bundle-id → host PID`.
+- **`AppBundleLauncher`** routes `.app` paths through `NSWorkspace.openApplication` and attaches by PID instead of `exec`ing the inner binary directly. Without this, AppKit/AX-driven tools can't see the launched process.
 
 Every verb returns `{sessionId, state, stopReason?, …}` so the agent always knows where it is. Execution verbs (continue/step/interrupt/run-until) accept `wait` (seconds, default per-verb; `0` = fire-and-forget — pair with the `wait` verb).
 

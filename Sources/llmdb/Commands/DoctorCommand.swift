@@ -82,10 +82,13 @@ enum Doctor {
     private static func checkDaemon() -> DoctorCheck {
         let path = Daemon.defaultSocketPath
         if !FileManager.default.fileExists(atPath: path) {
+            // Not a failure — just no daemon yet. The next CLI/MCP call will
+            // auto-spawn it. Keeps `doctor` from false-positiving on a fresh
+            // install.
             return DoctorCheck(
                 name: "daemon",
-                ok: false,
-                detail: "not running (no socket at \(path)) — auto-spawns on first CLI call"
+                ok: true,
+                detail: "idle (no socket at \(path)) — auto-spawns on first CLI call"
             )
         }
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)

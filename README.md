@@ -156,7 +156,7 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 
 | Command | Description | Key options |
 |---|---|---|
-| `launch <binary> [-- args…]` | Launch a binary under `lldb-dap`. Stops on entry. | Forwards trailing args to the binary |
+| `launch <binary> [-- args…]` | Launch a binary or `.app` bundle under `lldb-dap`. Stops on entry. | `.app` bundles (or paths inside one) route via LaunchServices so the app registers with AppKit — needed for accessibility / UI-automation tools to see the process |
 | `attach` | Attach to a running process or Simulator app | `--pid N` OR `--app <bundle-id>` (exactly one) |
 | `stop` | Detach / terminate the session | `--session ID` |
 | `sessions` | List active debug sessions | — |
@@ -194,7 +194,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 
 | Command | Description | Key options |
 |---|---|---|
-| `doctor` | Verify lldb-dap, socket dir, daemon reachability. Exits 1 on failure. | — |
+| `doctor` | Verify lldb-dap, socket dir, daemon reachability. `daemon: ok+idle` on a fresh machine; only an unreachable stale socket counts as a failure. Exits 1 on any failure. | — |
 | `daemon` | Run `llmdbd` (normally auto-spawned). | `--socket PATH` to override |
 | `mcp` | Start the stdio MCP server. | `--setup` prints client config snippets |
 

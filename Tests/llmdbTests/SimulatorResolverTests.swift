@@ -2,6 +2,37 @@ import Foundation
 @testable import llmdb
 import Testing
 
+@Suite("AppBundleLauncher")
+struct AppBundleLauncherTests {
+    @Test
+    func detectsDirectAppBundle() {
+        let url = AppBundleLauncher.appBundleURL(for: "/Applications/MyApp.app")
+        #expect(url?.path == "/Applications/MyApp.app")
+    }
+
+    @Test
+    func detectsBinaryInsideAppBundle() {
+        let url = AppBundleLauncher.appBundleURL(for: "/Applications/MyApp.app/Contents/MacOS/MyApp")
+        #expect(url?.path == "/Applications/MyApp.app")
+    }
+
+    @Test
+    func ignoresPlainBinary() {
+        let url = AppBundleLauncher.appBundleURL(for: "/usr/local/bin/llmdb")
+        #expect(url == nil)
+    }
+
+    @Test
+    func picksOuterAppForNestedBundles() {
+        // Some apps embed helper .app bundles inside Resources; the outer one
+        // is what LaunchServices manages.
+        let url = AppBundleLauncher.appBundleURL(
+            for: "/Applications/Outer.app/Contents/Resources/Helper.app/Contents/MacOS/Helper"
+        )
+        #expect(url?.path == "/Applications/Outer.app")
+    }
+}
+
 @Suite("SimulatorResolver")
 struct SimulatorResolverTests {
     // MARK: - parseBootedUDID
