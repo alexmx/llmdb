@@ -4,7 +4,7 @@ import Testing
 
 @Suite("DAPClient against llmdb-fixture")
 struct DAPClientIntegrationTests {
-    /// Drives the full M1 path: initialize → launch → setBreakpoints →
+    /// Drives the full path: initialize → launch → setBreakpoints →
     /// configurationDone → stopped → stackTrace → scopes → variables.
     /// Asserts the locals at fixture BP1 match the math.
     @Test
@@ -102,14 +102,6 @@ struct DAPClientIntegrationTests {
             dir = dir.deletingLastPathComponent()
         }
         throw TestSkip("could not locate Package.swift")
-    }
-
-    struct TestTimeout: Error, CustomStringConvertible {
-        let seconds: TimeInterval
-        let waitingFor: String
-        var description: String {
-            "timed out after \(seconds)s waiting for `\(waitingFor)` event"
-        }
     }
 
     struct TestSkip: Error, CustomStringConvertible {

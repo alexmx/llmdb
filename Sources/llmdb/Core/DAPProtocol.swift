@@ -5,7 +5,7 @@ import Foundation
 // we actually use; intentionally not a full DAP schema.
 //
 // Shared between SessionManager (uses these to build requests) and the
-// DAPClient tests (drive lldb-dap directly). M2 adds threads/step/evaluate/etc.
+// DAPClient tests (drive lldb-dap directly).
 
 // MARK: - Initialize
 

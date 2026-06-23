@@ -31,7 +31,9 @@ enum AppBundleLauncher {
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Int32, Error>) in
             NSWorkspace.shared.openApplication(at: url, configuration: config) { app, error in
                 if let error {
-                    cont.resume(throwing: LlmdbError.dapFailure("LaunchServices openApplication failed: \(error.localizedDescription)"))
+                    cont
+                        .resume(throwing: LlmdbError
+                            .dapFailure("LaunchServices openApplication failed: \(error.localizedDescription)"))
                 } else if let app {
                     cont.resume(returning: app.processIdentifier)
                 } else {

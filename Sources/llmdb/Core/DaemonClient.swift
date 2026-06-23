@@ -12,9 +12,9 @@ enum DaemonClient {
     }
 
     /// Call a method on the daemon. Auto-spawns the daemon on first use.
-    static func call<Params: Encodable & Sendable, Result: Decodable & Sendable>(
+    static func call<Result: Decodable & Sendable>(
         method: String,
-        params: Params,
+        params: some Encodable & Sendable,
         as resultType: Result.Type
     ) async throws -> Result {
         let fd = try await connectOrSpawn()

@@ -87,9 +87,8 @@ enum DAPMessage {
                 body: bodyData
             ))
         case "request":
-            // lldb-dap can issue reverse requests (runInTerminal). Treat as event-like
-            // for now; we don't service them in M1.
-            throw DAPError.unexpectedMessageType("request (reverse — not handled in M1)")
+            // lldb-dap can issue reverse requests (runInTerminal); we don't service them.
+            throw DAPError.unexpectedMessageType("request (reverse — not handled)")
         default:
             throw DAPError.unexpectedMessageType(type)
         }

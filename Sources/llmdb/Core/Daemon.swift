@@ -320,7 +320,7 @@ public final class Daemon: @unchecked Sendable {
 
     // MARK: - JSON-RPC encoding
 
-    private static func encodeOK<T: Encodable>(id: Int, result: T) -> Data {
+    private static func encodeOK(id: Int, result: some Encodable) -> Data {
         do {
             return try JSONEncoder().encode(RPCResult(id: id, result: result))
         } catch {

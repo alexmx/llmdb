@@ -25,7 +25,7 @@ enum Doctor {
         async let dap = checkLldbDap()
         let socketDir = checkSocketDir()
         let daemon = checkDaemon()
-        return DoctorReport(checks: [await dap, socketDir, daemon])
+        return await DoctorReport(checks: [dap, socketDir, daemon])
     }
 
     // MARK: - lldb-dap

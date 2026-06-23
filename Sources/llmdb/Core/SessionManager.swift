@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns the set of live debug sessions. Drives the DAP handshake per session,
-/// tracks the most recent stop event, and exposes the high-level M1 verbs.
+/// tracks the most recent stop event, and exposes the high-level verbs.
 ///
 /// Event multiplexing lives in `DAPClient` itself — SessionManager just
 /// subscribes to its own listener stream and asks `client.waitForEvent(...)`
@@ -89,10 +89,13 @@ actor SessionManager {
             throw LlmdbError.dapFailure("setBreakpoints returned no breakpoint")
         }
         // Stock message for unverified BPs so callers don't panic at `verified: false`.
-        let message = bp.message ?? (bp.verified
-            ? nil
-            :
-            "verification deferred until module loads — common for breakpoints set before launch or in lazily-loaded modules")
+        let message: String? = if let bpMessage = bp.message {
+            bpMessage
+        } else if bp.verified {
+            nil
+        } else {
+            Self.unverifiedBreakpointMessage
+        }
         let model = Breakpoint(
             id: bp.id ?? 0,
             verified: bp.verified,
@@ -144,9 +147,7 @@ actor SessionManager {
         if entry.info.state != .running {
             return snapshot(entry)
         }
-        let waiter = await entry.client.waitForEvent(timeout: timeout ?? 60) {
-            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
-        }
+        let waiter = await entry.client.waitForEvent(timeout: timeout ?? 60, matching: Self.isStopOrExit)
         _ = try await waiter.value
         return snapshot(entry)
     }
@@ -169,9 +170,7 @@ actor SessionManager {
         }
 
         // Subscribe BEFORE sending so we don't miss the stop.
-        let waiter = await entry.client.waitForEvent(timeout: wait) {
-            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
-        }
+        let waiter = await entry.client.waitForEvent(timeout: wait, matching: Self.isStopOrExit)
         _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
         _ = try await waiter.value
         return snapshot(entry)
@@ -380,16 +379,14 @@ actor SessionManager {
                 arguments: AttachArgs(pid: Int(pid), stopOnEntry: true)
             )
         case .simulator:
-            throw LlmdbError.notImplemented("simulator attach (M2)")
+            throw LlmdbError.notImplemented("simulator attach")
         }
 
         _ = try await initWaiter.value
 
         // After `initialized`, send configurationDone; the stopOnEntry stop
         // arrives shortly after.
-        let stopWaiter = await entry.client.waitForEvent(timeout: 10) {
-            $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
-        }
+        let stopWaiter = await entry.client.waitForEvent(timeout: 10, matching: Self.isStopOrExit)
         _ = try await entry.client.request("configurationDone")
         _ = try await stopWaiter.value
     }
@@ -447,6 +444,15 @@ actor SessionManager {
     private func markTerminated(entryID: String) {
         sessions[entryID]?.info.state = .terminated
     }
+
+    /// True for the DAP events that mean a session has left `.running`:
+    /// it either stopped at a breakpoint/step or the target ended.
+    private static let isStopOrExit: @Sendable (DAPEvent) -> Bool = {
+        $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+    }
+
+    private static let unverifiedBreakpointMessage =
+        "verification deferred until module loads — common for breakpoints set before launch or in lazily-loaded modules"
 
     private static func makeID() -> String {
         let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")

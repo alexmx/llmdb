@@ -28,12 +28,7 @@ actor DAPClient {
     /// off the calling task (via `xcrun --find lldb-dap`) before constructing
     /// the actor, so the blocking lookup doesn't park an actor's executor.
     static func spawn(executable: String? = nil) async throws -> DAPClient {
-        let path: String
-        if let executable {
-            path = executable
-        } else {
-            path = await Self.resolveExecutable()
-        }
+        let path = if let executable { executable } else { await Self.resolveExecutable() }
         return try DAPClient(executablePath: path)
     }
 
@@ -84,11 +79,17 @@ actor DAPClient {
         closed = true
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         if process.isRunning { process.terminate() }
-        for (_, cont) in subscribers {
+        finishSubscribersAndPending()
+    }
+
+    /// Finish every event stream and fail every in-flight request. Idempotent
+    /// via the `closed` guard in callers.
+    private func finishSubscribersAndPending() {
+        for cont in subscribers.values {
             cont.finish()
         }
         subscribers.removeAll()
-        for (_, cont) in pending {
+        for cont in pending.values {
             cont.resume(throwing: DAPError.closed)
         }
         pending.removeAll()
@@ -151,9 +152,9 @@ actor DAPClient {
         try await request(command, arguments: EmptyArgs())
     }
 
-    func request<T: Encodable & Sendable>(
+    func request(
         _ command: String,
-        arguments: T
+        arguments: some Encodable & Sendable
     ) async throws -> DAPResponse {
         guard !closed else { throw DAPError.closed }
         nextSeq += 1
@@ -189,14 +190,7 @@ actor DAPClient {
     private func handleClose() {
         guard !closed else { return }
         closed = true
-        for (_, cont) in subscribers {
-            cont.finish()
-        }
-        subscribers.removeAll()
-        for (_, cont) in pending {
-            cont.resume(throwing: DAPError.closed)
-        }
-        pending.removeAll()
+        finishSubscribersAndPending()
     }
 
     private func dispatch(_ messageBytes: Data) {
@@ -204,7 +198,7 @@ actor DAPClient {
         do {
             msg = try DAPMessage.parse(messageBytes)
         } catch {
-            // Malformed or reverse-request; ignore for M1.
+            // Malformed or reverse-request; ignore.
             return
         }
         switch msg {

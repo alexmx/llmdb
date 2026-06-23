@@ -19,7 +19,9 @@ enum LlmdbTools {
     struct ExecToolArgs: MCPToolInput {
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
-        @InputProperty("Seconds to wait for next stop. Omit for default (60s continue / 10s interrupt / 30s step). 0 = fire-and-forget — pair with llmdb_wait.")
+        @InputProperty(
+            "Seconds to wait for next stop. Omit for default (60s continue / 10s interrupt / 30s step). 0 = fire-and-forget — pair with llmdb_wait."
+        )
         var wait: Double?
     }
 
@@ -53,7 +55,9 @@ enum LlmdbTools {
     struct AttachToolArgs: MCPToolInput {
         @InputProperty("Host PID. Mutually exclusive with `app`.")
         var pid: Int?
-        @InputProperty("iOS Simulator bundle ID (resolved via xcrun simctl in the booted sim). Mutually exclusive with `pid`.")
+        @InputProperty(
+            "iOS Simulator bundle ID (resolved via xcrun simctl in the booted sim). Mutually exclusive with `pid`."
+        )
         var app: String?
     }
 
@@ -287,9 +291,9 @@ enum LlmdbTools {
     // MARK: - Helpers
 
     /// Call the daemon and encode the typed result as JSON for the MCP reply.
-    private static func callJSON<P: Encodable & Sendable, R: Codable & Sendable>(
+    private static func callJSON<R: Codable & Sendable>(
         _ method: String,
-        _ params: P,
+        _ params: some Encodable & Sendable,
         _ resultType: R.Type
     ) async throws -> MCPToolResult {
         let result = try await DaemonClient.call(method: method, params: params, as: R.self)

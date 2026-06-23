@@ -1,6 +1,6 @@
 import Foundation
 
-/// What every M1 verb returns: enough context that the caller knows where the
+/// What every verb returns: enough context that the caller knows where the
 /// session is without a follow-up call.
 struct SessionSnapshot: Codable {
     let sessionId: String

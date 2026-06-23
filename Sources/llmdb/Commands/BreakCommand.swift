@@ -11,7 +11,7 @@ struct BreakCommand: AsyncParsableCommand {
     struct SetSub: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "set",
-            abstract: "Set a breakpoint by file:line (M1) or symbol/regex (M2)"
+            abstract: "Set a breakpoint by file:line"
         )
 
         @Argument(help: "Location: `<file>:<line>`")
