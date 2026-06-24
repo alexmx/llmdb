@@ -138,6 +138,7 @@ llmdb sessions
 
 # Manage breakpoints
 llmdb break set ./Sources/Fixture/main.swift:34
+llmdb break set ./Sources/Fixture/main.swift:49 --condition "index == 2"
 llmdb break list
 llmdb break delete 1
 
@@ -165,7 +166,7 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 
 | Command | Description | Key options |
 |---|---|---|
-| `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot | — |
+| `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot | `--condition <expr>`, `--hit-condition <expr>` |
 | `break list` | List breakpoints in the session | — |
 | `break delete <id>` | Remove a breakpoint by id; returns the survivors | — |
 

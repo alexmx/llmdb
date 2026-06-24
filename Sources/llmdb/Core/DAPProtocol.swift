@@ -47,6 +47,10 @@ struct SourceArg: Encodable, Decodable {
 
 struct BPLine: Encodable {
     let line: Int
+    /// Expression that must be true for the breakpoint to fire.
+    var condition: String?
+    /// lldb hit-count expression, e.g. ">5" or "3" — fires once the count matches.
+    var hitCondition: String?
 }
 
 struct SetBreakpointsArgs: Encodable {

@@ -143,6 +143,40 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func conditionalBreakpointStopsOnMatch() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let sid = launch.sessionId
+
+        // BP3 is the walkArray loop body, iterated over ["alpha","beta","gamma"].
+        // `index == 2` should skip the first two passes and stop on "gamma".
+        let (_, bp) = try await manager.setBreakpoint(
+            sessionId: sid,
+            file: paths.fixtureSource,
+            line: 49,
+            condition: "index == 2"
+        )
+        #expect(bp.verified == true)
+        #expect(bp.condition == "index == 2")
+
+        let stopped = try await manager.continueExecution(sessionId: sid)
+        #expect(stopped.state == .stopped)
+        #expect(stopped.stopReason?.reason == "breakpoint")
+
+        let locals = try await manager.locals(sessionId: sid)
+        let index = locals.first { $0.name == "index" }?.value
+        #expect(index == "2", "condition should have held execution until index == 2, got \(index ?? "nil")")
+
+        // The condition survives a break.list round-trip.
+        let listed = try await manager.listBreakpoints(sessionId: sid)
+        #expect(listed.first?.condition == "index == 2")
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()
 

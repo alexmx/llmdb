@@ -20,6 +20,12 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Session ID")
         var session: String?
 
+        @Option(name: .long, help: "Fire only when this expression is true, e.g. `n > 100`")
+        var condition: String?
+
+        @Option(name: .long, help: "Fire on a hit-count match, e.g. `>5` or `3`")
+        var hitCondition: String?
+
         @Option(name: .long, help: "Output format")
         var format: OutputFormat = .default
 
@@ -27,7 +33,13 @@ struct BreakCommand: AsyncParsableCommand {
             let (file, line) = try parseFileLineLocation(location)
             let result = try await DaemonClient.call(
                 method: "break.set",
-                params: BreakSetParams(sessionId: session, file: file, line: line),
+                params: BreakSetParams(
+                    sessionId: session,
+                    file: file,
+                    line: line,
+                    condition: condition,
+                    hitCondition: hitCondition
+                ),
                 as: BreakSetResult.self
             )
             try JSONOutput.print(result)

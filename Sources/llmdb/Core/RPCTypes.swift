@@ -83,6 +83,8 @@ struct BreakSetParams: Codable {
     let sessionId: String?
     let file: String
     let line: Int
+    var condition: String?
+    var hitCondition: String?
 }
 
 struct RunUntilParams: Codable {

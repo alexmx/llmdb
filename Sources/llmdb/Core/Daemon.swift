@@ -14,7 +14,7 @@ import Foundation
 ///                 // exactly one of pid/app; `app` resolves a bundle ID in
 ///                 // the booted iOS Simulator to a host PID via simctl.
 ///   sessions      {}                                            → [Session]
-///   break.set     { sessionId?, file, line }                    → { snapshot, breakpoint }
+///   break.set     { sessionId?, file, line, condition?, hitCondition? } → { snapshot, breakpoint }
 ///   break.list    { sessionId? }                                → { breakpoints }
 ///   break.delete  { sessionId?, id }                            → { breakpoints }
 ///   continue      { sessionId?, wait? }                         → SessionSnapshot
@@ -215,7 +215,11 @@ public final class Daemon: @unchecked Sendable {
             case "break.set":
                 let p = try decode(BreakSetParams.self)
                 let (snap, bp) = try await manager.setBreakpoint(
-                    sessionId: p.sessionId, file: p.file, line: p.line
+                    sessionId: p.sessionId,
+                    file: p.file,
+                    line: p.line,
+                    condition: p.condition,
+                    hitCondition: p.hitCondition
                 )
                 return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
 

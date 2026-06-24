@@ -74,14 +74,16 @@ actor SessionManager {
     func setBreakpoint(
         sessionId: String?,
         file: String,
-        line: Int
+        line: Int,
+        condition: String? = nil,
+        hitCondition: String? = nil
     ) async throws -> (SessionSnapshot, Breakpoint) {
         let entry = try resolve(sessionId)
         let resp = try await entry.client.request(
             "setBreakpoints",
             arguments: SetBreakpointsArgs(
                 source: .init(path: file),
-                breakpoints: [.init(line: line)]
+                breakpoints: [.init(line: line, condition: condition, hitCondition: hitCondition)]
             )
         )
         let body = try resp.decodeBody(SetBreakpointsBody.self)
@@ -96,12 +98,16 @@ actor SessionManager {
         } else {
             Self.unverifiedBreakpointMessage
         }
+        // lldb-dap doesn't echo condition/hitCondition, so carry the request
+        // values through onto the tracked model.
         let model = Breakpoint(
             id: bp.id ?? 0,
             verified: bp.verified,
             line: bp.line,
             source: bp.source?.path ?? file,
-            message: message
+            message: message,
+            condition: condition,
+            hitCondition: hitCondition
         )
         if let bid = bp.id { entry.breakpoints[bid] = model }
         return (snapshot(entry), model)
@@ -232,9 +238,17 @@ actor SessionManager {
         guard let source = doomed.source else {
             throw LlmdbError.dapFailure("breakpoint \(id) has no source path; cannot rebuild setBreakpoints")
         }
-        let survivors = entry.breakpoints.values
+        let surviving = entry.breakpoints.values
             .filter { $0.source == source && $0.id != id }
-            .compactMap { $0.line.map { BPLine(line: $0) } }
+        let survivors = surviving.compactMap { bp in
+            bp.line.map { BPLine(line: $0, condition: bp.condition, hitCondition: bp.hitCondition) }
+        }
+        // Keyed by line so we can re-attach condition/hitCondition (which
+        // lldb-dap doesn't echo) after the rebuild hands back fresh ids.
+        let conditionsByLine = Dictionary(
+            surviving.compactMap { bp in bp.line.map { ($0, bp) } },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         let resp = try await entry.client.request(
             "setBreakpoints",
@@ -248,12 +262,15 @@ actor SessionManager {
         let body = try resp.decodeBody(SetBreakpointsBody.self)
         for bp in body.breakpoints {
             guard let bid = bp.id else { continue }
+            let prior = bp.line.flatMap { conditionsByLine[$0] }
             entry.breakpoints[bid] = Breakpoint(
                 id: bid,
                 verified: bp.verified,
                 line: bp.line,
                 source: bp.source?.path ?? source,
-                message: bp.message
+                message: bp.message,
+                condition: prior?.condition,
+                hitCondition: prior?.hitCondition
             )
         }
         return entry.breakpoints.values.sorted { $0.id < $1.id }
@@ -433,7 +450,9 @@ actor SessionManager {
                     verified: body.breakpoint.verified,
                     line: body.breakpoint.line ?? existing?.line,
                     source: body.breakpoint.source?.path ?? existing?.source,
-                    message: body.breakpoint.message ?? existing?.message
+                    message: body.breakpoint.message ?? existing?.message,
+                    condition: existing?.condition,
+                    hitCondition: existing?.hitCondition
                 )
             }
         default:

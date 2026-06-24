@@ -73,6 +73,10 @@ enum LlmdbTools {
         var line: Int
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
+        @InputProperty("Fire only when this expression is true in the target's language, e.g. `n > 100`")
+        var condition: String?
+        @InputProperty("Fire on a hit-count match, e.g. `>5` (every hit past 5) or `3` (the 3rd hit)")
+        var hit_condition: String?
     }
 
     struct StepToolArgs: MCPToolInput {
@@ -154,11 +158,17 @@ enum LlmdbTools {
 
     static let breakSet = MCPTool(
         name: "llmdb_break_set",
-        description: "Set a source breakpoint at file:line. verified=false before module load is normal — flips true later; the message field explains."
+        description: "Set a source breakpoint at file:line. Optional condition / hit_condition fire it selectively. verified=false before module load is normal — flips true later; the message field explains."
     ) { (args: BreakSetToolArgs) in
         try await callJSON(
             "break.set",
-            BreakSetParams(sessionId: args.session_id, file: args.file, line: args.line),
+            BreakSetParams(
+                sessionId: args.session_id,
+                file: args.file,
+                line: args.line,
+                condition: args.condition,
+                hitCondition: args.hit_condition
+            ),
             BreakSetResult.self
         )
     }
