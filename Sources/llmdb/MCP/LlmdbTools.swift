@@ -9,7 +9,7 @@ enum LlmdbTools {
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete, breakException,
             continueExec, runUntil, interrupt, step, wait,
-            backtrace, locals, expand, threads, expr, output, setVar,
+            backtrace, locals, expand, scopes, threads, expr, output, setVar,
             doctor
         ]
     }
@@ -107,8 +107,17 @@ enum LlmdbTools {
     }
 
     struct ExpandToolArgs: MCPToolInput {
-        @InputProperty("variablesReference from a locals/expand entry (must be non-zero)")
+        @InputProperty("variablesReference from a locals/expand/scopes entry (must be non-zero)")
         var variables_reference: Int
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
+    struct ScopesToolArgs: MCPToolInput {
+        @InputProperty("Frame index (default 0 = top frame)")
+        var frame: Int?
+        @InputProperty("Thread ID (defaults to the stopped thread)")
+        var thread: Int?
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
@@ -293,6 +302,17 @@ enum LlmdbTools {
             "expand",
             ExpandParams(sessionId: args.session_id, variablesReference: args.variables_reference),
             ExpandResult.self
+        )
+    }
+
+    static let scopes = MCPTool(
+        name: "llmdb_scopes",
+        description: "List a frame's variable scopes (Locals, Globals, Registers, …), each with a variablesReference. Pass that ref to llmdb_expand to read the scope — this is how you reach globals/statics and registers, which llmdb_locals (Locals only) doesn't return. `expensive: true` marks scopes costly to read."
+    ) { (args: ScopesToolArgs) in
+        try await callJSON(
+            "scopes",
+            ScopesParams(sessionId: args.session_id, threadId: args.thread, frame: args.frame),
+            ScopesResult.self
         )
     }
 

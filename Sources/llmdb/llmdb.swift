@@ -23,6 +23,7 @@ struct Llmdb: AsyncParsableCommand {
             BacktraceCommand.self,
             LocalsCommand.self,
             ExpandCommand.self,
+            ScopesCommand.self,
             ThreadsCommand.self,
             ExprCommand.self,
             OutputCommand.self,

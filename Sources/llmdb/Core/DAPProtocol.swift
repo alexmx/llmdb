@@ -176,6 +176,9 @@ struct ScopesBody: Decodable {
 struct DAPScope: Decodable {
     let name: String
     let variablesReference: Int
+    /// True for scopes that are costly to read (e.g. Registers); a hint to
+    /// fetch them only on demand.
+    let expensive: Bool?
 }
 
 struct VariablesArgs: Encodable {

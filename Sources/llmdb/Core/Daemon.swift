@@ -26,6 +26,7 @@ import Foundation
 ///   bt            { sessionId?, depth? }                        → { frames }
 ///   locals        { sessionId?, frame? }                        → { locals }
 ///   expand        { sessionId?, variablesReference }            → { children }
+///   scopes        { sessionId?, threadId?, frame? }             → { scopes }
 ///   output        { sessionId?, clear? }                        → { output }
 ///   set-var       { sessionId?, target, value, frame? }          → { variable }
 ///   threads       { sessionId? }                                → { threads }
@@ -296,6 +297,13 @@ public final class Daemon: @unchecked Sendable {
                     sessionId: p.sessionId, variablesReference: p.variablesReference
                 )
                 return encodeOK(id: requestID, result: ExpandResult(children: children))
+
+            case "scopes":
+                let p = try decode(ScopesParams.self)
+                let scopes = try await manager.scopes(
+                    sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0
+                )
+                return encodeOK(id: requestID, result: ScopesResult(scopes: scopes))
 
             case "output":
                 let p = try decode(OutputParams.self)

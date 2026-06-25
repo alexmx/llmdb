@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 21 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 22 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -69,7 +69,17 @@ llmdb expand 4
 ]}
 ```
 
-Each child carries its own `variablesReference`, so you can keep drilling into nested values.
+Each child carries its own `variablesReference`, so you can keep drilling into nested values. `locals` only reads the **Locals** scope; to reach globals/statics or registers, list the frame's scopes and `expand` the one you want:
+
+```bash
+llmdb scopes
+{ "scopes" : [
+    { "name" : "Locals",    "variablesReference" : 1, "expensive" : false },
+    { "name" : "Globals",   "variablesReference" : 2, "expensive" : false },
+    { "name" : "Registers", "variablesReference" : 3, "expensive" : false }
+]}
+llmdb expand 2   # read the Globals scope
+```
 
 ### 4. Evaluate — ask lldb anything
 
@@ -221,6 +231,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 | `bt` | Structured backtrace for the stopped thread | `--thread N`, `--depth N` |
 | `locals` | Typed locals for a stack frame | `--frame N` (default 0) |
 | `expand <ref>` | Drill into a structured value by its `variablesReference` | — |
+| `scopes` | List a frame's scopes (Locals, Globals, Registers) with refs to `expand` | `--frame N`, `--thread N` |
 | `threads` | List threads in the session | — |
 | `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
 | `set-var <target> <value>` | Assign a new value to a variable (or lvalue like `self.x`) during a stop | `--frame N` |

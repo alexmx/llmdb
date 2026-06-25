@@ -242,6 +242,34 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func scopesReachGlobals() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let sid = launch.sessionId
+
+        // At BP5 (line 80) every top-level binding is alive.
+        _ = try await manager.runUntil(sessionId: sid, file: paths.fixtureSource, line: 80)
+
+        let scopes = try await manager.scopes(sessionId: sid)
+        #expect(scopes.contains { $0.name == "Locals" })
+        guard let globals = scopes.first(where: { $0.name == "Globals" }) else {
+            Issue.record("expected a Globals scope")
+            return
+        }
+
+        // Globals aren't in the Locals scope, but expanding the scope ref reaches
+        // the file-level bindings — the gap that `locals` alone can't cover.
+        let vars = try await manager.expand(sessionId: sid, variablesReference: globals.variablesReference)
+        let byName = Dictionary(vars.map { ($0.name, $0.value) }, uniquingKeysWith: { a, _ in a })
+        #expect(byName["computed"] == "20")
+        #expect(byName["fib"] == "21")
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
     func setVariableMutatesLocal() async throws {
         let paths = try throwFixturePaths()
         let manager = SessionManager()

@@ -111,6 +111,12 @@ struct ExpandParams: Codable {
     let variablesReference: Int
 }
 
+struct ScopesParams: Codable {
+    let sessionId: String?
+    let threadId: Int?
+    let frame: Int?
+}
+
 struct SetVarParams: Codable {
     let sessionId: String?
     let target: String
@@ -162,6 +168,10 @@ struct LocalsResult: Codable {
 
 struct ExpandResult: Codable {
     let children: [Local]
+}
+
+struct ScopesResult: Codable {
+    let scopes: [Scope]
 }
 
 struct SetVarResult: Codable {

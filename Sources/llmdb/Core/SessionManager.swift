@@ -355,6 +355,20 @@ actor SessionManager {
         }
     }
 
+    /// The variable scopes for a frame (Locals, Globals, Registers, …), each
+    /// with a `variablesReference` that `expand` can read. Lets callers reach
+    /// globals/statics and registers, which `locals` (Locals-only) skips.
+    func scopes(
+        sessionId: String?,
+        threadId: Int? = nil,
+        frameIndex: Int = 0
+    ) async throws -> [Scope] {
+        let entry = try resolve(sessionId)
+        return try await fetchScopes(entry, threadId: threadId, frameIndex: frameIndex).map {
+            Scope(name: $0.name, variablesReference: $0.variablesReference, expensive: $0.expensive ?? false)
+        }
+    }
+
     /// Resolve the `Locals` scope's variablesReference for a frame, or nil if
     /// the frame has no such scope. Used by `locals` and `setVariable`.
     private func localsScopeRef(
@@ -362,6 +376,16 @@ actor SessionManager {
         threadId: Int?,
         frameIndex: Int
     ) async throws -> Int? {
+        let scopes = try await fetchScopes(entry, threadId: threadId, frameIndex: frameIndex)
+        return scopes.first { $0.name == "Locals" }?.variablesReference
+    }
+
+    /// Fetch the raw DAP scopes for a frame, validating the thread/frame.
+    private func fetchScopes(
+        _ entry: SessionEntry,
+        threadId: Int?,
+        frameIndex: Int
+    ) async throws -> [DAPScope] {
         guard let tid = threadId ?? entry.stoppedThreadId else {
             throw LlmdbError.dapFailure("no stopped thread; is the session running?")
         }
@@ -374,8 +398,7 @@ actor SessionManager {
             throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
         }
         let scopesResp = try await entry.client.request("scopes", arguments: ScopesArgs(frameId: frame.id))
-        let scopes = try scopesResp.decodeBody(ScopesBody.self).scopes
-        return scopes.first { $0.name == "Locals" }?.variablesReference
+        return try scopesResp.decodeBody(ScopesBody.self).scopes
     }
 
     /// Assign a new value to a variable during a stop, then return its updated
