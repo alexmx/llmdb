@@ -26,6 +26,7 @@ struct Llmdb: AsyncParsableCommand {
             ThreadsCommand.self,
             ExprCommand.self,
             OutputCommand.self,
+            SetVarCommand.self,
             // System
             DaemonCommand.self,
             DoctorCommand.self,

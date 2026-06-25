@@ -9,7 +9,7 @@ enum LlmdbTools {
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete, breakException,
             continueExec, runUntil, interrupt, step, wait,
-            backtrace, locals, expand, threads, expr, output,
+            backtrace, locals, expand, threads, expr, output, setVar,
             doctor
         ]
     }
@@ -116,6 +116,17 @@ enum LlmdbTools {
     struct OutputToolArgs: MCPToolInput {
         @InputProperty("Drain the buffer so the next call returns only output produced after this one")
         var clear: Bool?
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
+    struct SetVarToolArgs: MCPToolInput {
+        @InputProperty("Assignable target: a local name, or an expression like `self.count` or `arr[0]`")
+        var target: String
+        @InputProperty("New value in the target's language, e.g. 42, true, \"hi\"")
+        var value: String
+        @InputProperty("Frame index (default 0 = top frame)")
+        var frame: Int?
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
@@ -297,6 +308,22 @@ enum LlmdbTools {
         description: "The target's captured stdout/stderr/console output, oldest first, each chunk tagged with its category. Pass clear=true to drain so the next call returns only newer output."
     ) { (args: OutputToolArgs) in
         try await callJSON("output", OutputParams(sessionId: args.session_id, clear: args.clear), OutputResult.self)
+    }
+
+    static let setVar = MCPTool(
+        name: "llmdb_set_variable",
+        description: "Assign a new value to a variable during a stop, to test a hypothesis. `target` is any assignable expression — a local name, `self.count`, `arr[0]`, etc. Returns the variable's updated value and type."
+    ) { (args: SetVarToolArgs) in
+        try await callJSON(
+            "set-var",
+            SetVarParams(
+                sessionId: args.session_id,
+                target: args.target,
+                value: args.value,
+                frame: args.frame
+            ),
+            SetVarResult.self
+        )
     }
 
     static let expr = MCPTool(

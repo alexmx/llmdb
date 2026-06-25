@@ -27,6 +27,7 @@ import Foundation
 ///   locals        { sessionId?, frame? }                        → { locals }
 ///   expand        { sessionId?, variablesReference }            → { children }
 ///   output        { sessionId?, clear? }                        → { output }
+///   set-var       { sessionId?, target, value, frame? }          → { variable }
 ///   threads       { sessionId? }                                → { threads }
 ///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
 ///   stop          { sessionId? }                                → { ok: true }
@@ -300,6 +301,16 @@ public final class Daemon: @unchecked Sendable {
                 let p = try decode(OutputParams.self)
                 let chunks = try await manager.output(sessionId: p.sessionId, clear: p.clear ?? false)
                 return encodeOK(id: requestID, result: OutputResult(output: chunks))
+
+            case "set-var":
+                let p = try decode(SetVarParams.self)
+                let variable = try await manager.setVariable(
+                    sessionId: p.sessionId,
+                    target: p.target,
+                    value: p.value,
+                    frameIndex: p.frame ?? 0
+                )
+                return encodeOK(id: requestID, result: SetVarResult(variable: variable))
 
             case "threads":
                 let p = try decode(SessionParams.self)

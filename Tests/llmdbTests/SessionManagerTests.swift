@@ -210,10 +210,10 @@ struct SessionManagerIntegrationTests {
 
     @Test
     func exceptionBreakpointStopsOnThrow() async throws {
-        let binary = try throwFixtureBinary()
+        let paths = try throwFixturePaths()
         let manager = SessionManager()
 
-        let launch = try await manager.launch(binary: binary, args: [])
+        let launch = try await manager.launch(binary: paths.binary, args: [])
         let sid = launch.sessionId
 
         // Empty filter list discovers what the adapter advertises without enabling.
@@ -237,6 +237,33 @@ struct SessionManagerIntegrationTests {
 
         let frames = try await manager.backtrace(sessionId: sid)
         #expect(frames.contains { $0.name.contains("throwingWork") })
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
+    func setVariableMutatesLocal() async throws {
+        let paths = try throwFixturePaths()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: paths.binary, args: [])
+        let sid = launch.sessionId
+
+        // Stop where `counter` (a mutable var) is in scope.
+        _ = try await manager.runUntil(sessionId: sid, file: paths.source, line: 17)
+
+        let updated = try await manager.setVariable(sessionId: sid, target: "counter", value: "100")
+        #expect(updated.value == "100")
+        #expect(updated.type == "Int")
+
+        // The change is visible in a fresh locals read.
+        let locals = try await manager.locals(sessionId: sid)
+        #expect(locals.first { $0.name == "counter" }?.value == "100")
+
+        // Assigning to a `let` is rejected by the language, surfaced as an error.
+        await #expect(throws: (any Error).self) {
+            _ = try await manager.setVariable(sessionId: sid, target: "doubled", value: "5")
+        }
 
         _ = try await manager.stop(sessionId: sid)
     }
@@ -344,15 +371,16 @@ struct SessionManagerIntegrationTests {
         throw Skip("could not locate Package.swift")
     }
 
-    private func throwFixtureBinary() throws -> String {
+    private func throwFixturePaths() throws -> (binary: String, source: String) {
         var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         while dir.path != "/" {
             if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Package.swift").path) {
                 let binary = dir.appendingPathComponent(".build/debug/llmdb-throw-fixture").path
+                let source = dir.appendingPathComponent("Sources/ThrowFixture/main.swift").path
                 guard FileManager.default.fileExists(atPath: binary) else {
                     throw Skip("llmdb-throw-fixture not built — run `swift build` before testing")
                 }
-                return binary
+                return (binary, source)
             }
             dir = dir.deletingLastPathComponent()
         }

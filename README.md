@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 20 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 21 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -79,6 +79,13 @@ llmdb expr "sum + diff"
 ```
 
 `expr` runs in the context of the current frame. Use it when `locals` isn't enough — for property access (`self.state.count`), method calls, or arithmetic over locals.
+
+`set-var` goes the other way — it changes a variable mid-run so you can test a hypothesis without recompiling. `target` is any assignable expression (a local, `self.x`, `arr[0]`); it returns the variable's new value:
+
+```bash
+llmdb set-var counter 100
+{ "variable" : { "name" : "counter", "type" : "Int", "value" : "100", "variablesReference" : 0 } }
+```
 
 `output` returns whatever the target wrote to stdout/stderr while running — so you can see what the program printed, not just its state:
 
@@ -216,6 +223,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 | `expand <ref>` | Drill into a structured value by its `variablesReference` | — |
 | `threads` | List threads in the session | — |
 | `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
+| `set-var <target> <value>` | Assign a new value to a variable (or lvalue like `self.x`) during a stop | `--frame N` |
 | `output` | Captured stdout/stderr/console output from the target | `--clear` (drain the buffer) |
 
 ### System

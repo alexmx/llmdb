@@ -343,6 +343,25 @@ actor SessionManager {
         frameIndex: Int = 0
     ) async throws -> [Local] {
         let entry = try resolve(sessionId)
+        guard let ref = try await localsScopeRef(entry, threadId: threadId, frameIndex: frameIndex) else {
+            return []
+        }
+        let varsResp = try await entry.client.request(
+            "variables",
+            arguments: VariablesArgs(variablesReference: ref)
+        )
+        return try varsResp.decodeBody(VariablesBody.self).variables.map {
+            Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
+        }
+    }
+
+    /// Resolve the `Locals` scope's variablesReference for a frame, or nil if
+    /// the frame has no such scope. Used by `locals` and `setVariable`.
+    private func localsScopeRef(
+        _ entry: SessionEntry,
+        threadId: Int?,
+        frameIndex: Int
+    ) async throws -> Int? {
         guard let tid = threadId ?? entry.stoppedThreadId else {
             throw LlmdbError.dapFailure("no stopped thread; is the session running?")
         }
@@ -354,18 +373,37 @@ actor SessionManager {
         guard let frame = frames.first else {
             throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
         }
-
         let scopesResp = try await entry.client.request("scopes", arguments: ScopesArgs(frameId: frame.id))
         let scopes = try scopesResp.decodeBody(ScopesBody.self).scopes
-        guard let localsScope = scopes.first(where: { $0.name == "Locals" }) else { return [] }
+        return scopes.first { $0.name == "Locals" }?.variablesReference
+    }
 
-        let varsResp = try await entry.client.request(
-            "variables",
-            arguments: VariablesArgs(variablesReference: localsScope.variablesReference)
+    /// Assign a new value to a variable during a stop, then return its updated
+    /// state. `target` is any assignable expression in the target's language —
+    /// a local name, `self.count`, `arr[0]`, etc. Implemented via expression
+    /// assignment because lldb-dap's `setVariable` request is unreliable for
+    /// Swift (it rejects valid values as "Invalid encoding").
+    func setVariable(
+        sessionId: String?,
+        target: String,
+        value: String,
+        frameIndex: Int = 0
+    ) async throws -> Local {
+        // Perform the assignment; lldb evaluates it for its side effect and
+        // returns "()", which we discard.
+        _ = try await evaluate(
+            sessionId: sessionId,
+            expression: "\(target) = \(value)",
+            frameIndex: frameIndex
         )
-        return try varsResp.decodeBody(VariablesBody.self).variables.map {
-            Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
-        }
+        // Read the result back so the caller sees the resulting value and type.
+        let updated = try await evaluate(sessionId: sessionId, expression: target, frameIndex: frameIndex)
+        return Local(
+            name: target,
+            type: updated.type,
+            value: updated.value,
+            variablesReference: updated.variablesReference
+        )
     }
 
     /// Expand a structured value into its children. `variablesReference` comes
