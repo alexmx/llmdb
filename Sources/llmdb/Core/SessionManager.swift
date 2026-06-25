@@ -322,6 +322,27 @@ actor SessionManager {
         }
     }
 
+    /// Expand a structured value into its children. `variablesReference` comes
+    /// from a non-zero `variablesReference` on a `locals` (or prior `expand`)
+    /// entry; a value of 0 means the entry is a leaf with nothing to expand.
+    func expand(sessionId: String?, variablesReference: Int) async throws -> [Local] {
+        guard variablesReference > 0 else {
+            throw LlmdbError.invalidArgument(
+                name: "variablesReference",
+                value: "\(variablesReference)",
+                valid: ["a non-zero reference from a locals/expand entry"]
+            )
+        }
+        let entry = try resolve(sessionId)
+        let resp = try await entry.client.request(
+            "variables",
+            arguments: VariablesArgs(variablesReference: variablesReference)
+        )
+        return try resp.decodeBody(VariablesBody.self).variables.map {
+            Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
+        }
+    }
+
     @discardableResult
     func stop(sessionId: String?) async throws -> Bool {
         let entry = try resolve(sessionId)

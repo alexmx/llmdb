@@ -9,7 +9,7 @@ enum LlmdbTools {
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete,
             continueExec, runUntil, interrupt, step, wait,
-            backtrace, locals, threads, expr,
+            backtrace, locals, expand, threads, expr,
             doctor
         ]
     }
@@ -102,6 +102,13 @@ enum LlmdbTools {
         var frame: Int?
         @InputProperty("Thread ID (defaults to the stopped thread)")
         var thread: Int?
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
+    struct ExpandToolArgs: MCPToolInput {
+        @InputProperty("variablesReference from a locals/expand entry (must be non-zero)")
+        var variables_reference: Int
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
@@ -242,12 +249,23 @@ enum LlmdbTools {
 
     static let locals = MCPTool(
         name: "llmdb_locals",
-        description: "Typed locals for a stack frame (default frame=0, the top frame). Values are lldb-formatted strings — no extra parsing needed."
+        description: "Typed locals for a stack frame (default frame=0, the top frame). Values are lldb-formatted strings — no extra parsing needed. An entry with a non-zero variablesReference is structured (struct/array/object) — drill into it with llmdb_expand."
     ) { (args: LocalsToolArgs) in
         try await callJSON(
             "locals",
             LocalsParams(sessionId: args.session_id, threadId: args.thread, frame: args.frame),
             LocalsResult.self
+        )
+    }
+
+    static let expand = MCPTool(
+        name: "llmdb_expand",
+        description: "Drill into a structured value by its variablesReference (from a llmdb_locals or prior llmdb_expand entry). Returns the children, each with its own variablesReference for deeper nesting."
+    ) { (args: ExpandToolArgs) in
+        try await callJSON(
+            "expand",
+            ExpandParams(sessionId: args.session_id, variablesReference: args.variables_reference),
+            ExpandResult.self
         )
     }
 

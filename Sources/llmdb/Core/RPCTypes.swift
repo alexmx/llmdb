@@ -106,6 +106,11 @@ struct LocalsParams: Codable {
     let frame: Int?
 }
 
+struct ExpandParams: Codable {
+    let sessionId: String?
+    let variablesReference: Int
+}
+
 struct StepParams: Codable {
     let sessionId: String?
     let granularity: StepGranularity
@@ -136,6 +141,10 @@ struct BacktraceResult: Codable {
 
 struct LocalsResult: Codable {
     let locals: [Local]
+}
+
+struct ExpandResult: Codable {
+    let children: [Local]
 }
 
 struct ThreadsResult: Codable {

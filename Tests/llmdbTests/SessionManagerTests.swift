@@ -177,6 +177,38 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func expandStructuredValue() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let sid = launch.sessionId
+
+        // BP3 (walkArray) has `items: [String]` in scope — a structured value.
+        _ = try await manager.runUntil(sessionId: sid, file: paths.fixtureSource, line: 49)
+
+        let locals = try await manager.locals(sessionId: sid)
+        guard let items = locals.first(where: { $0.name == "items" }),
+              let ref = items.variablesReference, ref > 0
+        else {
+            Issue.record("expected a structured `items` local with a non-zero variablesReference")
+            return
+        }
+
+        let children = try await manager.expand(sessionId: sid, variablesReference: ref)
+        #expect(children.count == 3)
+        #expect(children.map(\.name) == ["[0]", "[1]", "[2]"])
+        #expect(children.map(\.value) == ["\"alpha\"", "\"beta\"", "\"gamma\""])
+
+        // A zero/negative reference is a leaf and must be rejected, not sent to lldb.
+        await #expect(throws: LlmdbError.self) {
+            _ = try await manager.expand(sessionId: sid, variablesReference: 0)
+        }
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()
 

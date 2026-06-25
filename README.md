@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 17 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 18 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -59,7 +59,17 @@ llmdb locals
 ]}
 ```
 
-Values are lldb-formatted strings — agents can read them directly without parsing memory layouts.
+Values are lldb-formatted strings — agents can read them directly without parsing memory layouts. A local with a non-zero `variablesReference` is structured (struct, array, object) — drill into it with `expand`:
+
+```bash
+llmdb expand 4
+{ "children" : [
+    { "name" : "[0]", "type" : "String", "value" : "\"alpha\"", "variablesReference" : 9 },
+    { "name" : "[1]", "type" : "String", "value" : "\"beta\"",  "variablesReference" : 10 }
+]}
+```
+
+Each child carries its own `variablesReference`, so you can keep drilling into nested values.
 
 ### 4. Evaluate — ask lldb anything
 
@@ -188,6 +198,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 |---|---|---|
 | `bt` | Structured backtrace for the stopped thread | `--thread N`, `--depth N` |
 | `locals` | Typed locals for a stack frame | `--frame N` (default 0) |
+| `expand <ref>` | Drill into a structured value by its `variablesReference` | — |
 | `threads` | List threads in the session | — |
 | `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
 
