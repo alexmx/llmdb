@@ -16,13 +16,30 @@ actor SessionManager {
         var stoppedThreadId: Int?
         var listener: Task<Void, Never>?
         var breakpoints: [Int: Breakpoint] = [:]
+        // Program output captured from DAP `output` events, oldest first.
+        // Trimmed from the front once it exceeds `maxOutputChars`.
+        var output: [OutputChunk] = []
+        var outputChars = 0
 
         init(id: String, client: DAPClient, info: Session) {
             self.id = id
             self.client = client
             self.info = info
         }
+
+        /// Append a chunk, dropping the oldest chunks if the buffer grows past
+        /// the cap so a chatty long-running target can't exhaust memory.
+        func appendOutput(_ chunk: OutputChunk) {
+            output.append(chunk)
+            outputChars += chunk.text.count
+            while outputChars > SessionManager.maxOutputChars, output.count > 1 {
+                outputChars -= output.removeFirst().text.count
+            }
+        }
     }
+
+    /// Upper bound on buffered output characters per session (~1 MB).
+    static let maxOutputChars = 1_000_000
 
     // MARK: - Public API
 
@@ -343,6 +360,19 @@ actor SessionManager {
         }
     }
 
+    /// Buffered program output (stdout/stderr/console) captured so far, oldest
+    /// first. Pass `clear: true` to drain the buffer so the next call returns
+    /// only output produced after this one.
+    func output(sessionId: String?, clear: Bool = false) throws -> [OutputChunk] {
+        let entry = try resolve(sessionId)
+        let chunks = entry.output
+        if clear {
+            entry.output.removeAll()
+            entry.outputChars = 0
+        }
+        return chunks
+    }
+
     @discardableResult
     func stop(sessionId: String?) async throws -> Bool {
         let entry = try resolve(sessionId)
@@ -459,6 +489,15 @@ actor SessionManager {
             entry.info.stopReason = nil
         case "terminated", "exited":
             entry.info.state = .terminated
+        case "output":
+            // Buffer the target's stdout/stderr/console output. Skip telemetry,
+            // which carries structured analytics rather than display text.
+            if let body = try? event.decodeBody(OutputEventBody.self) {
+                let category = body.category ?? "console"
+                if category != "telemetry" {
+                    entry.appendOutput(OutputChunk(category: category, text: body.output))
+                }
+            }
         case "breakpoint":
             // `breakpoint` events are typically updates (verified status flips
             // as modules load) and may omit source/line. Merge with what we

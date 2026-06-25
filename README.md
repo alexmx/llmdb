@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 18 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 19 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -79,6 +79,18 @@ llmdb expr "sum + diff"
 ```
 
 `expr` runs in the context of the current frame. Use it when `locals` isn't enough — for property access (`self.state.count`), method calls, or arithmetic over locals.
+
+`output` returns whatever the target wrote to stdout/stderr while running — so you can see what the program printed, not just its state:
+
+```bash
+llmdb output
+{ "output" : [
+    { "category" : "stdout", "text" : "compute(3, 4) = 20\n" },
+    { "category" : "stdout", "text" : "fib(8) = 21\n" }
+]}
+```
+
+Pass `--clear` to drain the buffer so the next call returns only output produced after this one.
 
 ### 5. Step — and verify you moved
 
@@ -201,6 +213,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 | `expand <ref>` | Drill into a structured value by its `variablesReference` | — |
 | `threads` | List threads in the session | — |
 | `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
+| `output` | Captured stdout/stderr/console output from the target | `--clear` (drain the buffer) |
 
 ### System
 

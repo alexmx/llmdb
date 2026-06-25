@@ -93,6 +93,13 @@ struct StoppedEventBody: Decodable {
     let hitBreakpointIds: [Int]?
 }
 
+/// `output` event: a chunk of text the target (or adapter) wrote. `category`
+/// is stdout/stderr/console/telemetry/important; absent means console.
+struct OutputEventBody: Decodable {
+    let category: String?
+    let output: String
+}
+
 // MARK: - Threads
 
 struct ThreadsBody: Decodable {

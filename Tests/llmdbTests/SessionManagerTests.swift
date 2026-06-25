@@ -209,6 +209,40 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func capturesProgramOutput() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let sid = launch.sessionId
+
+        // Stop at BP5 (line 80) — every earlier print (lines 64-72) has run, but
+        // "done" (printed at line 80) has not.
+        _ = try await manager.runUntil(sessionId: sid, file: paths.fixtureSource, line: 80)
+
+        // Output events race the stopped event; poll briefly for the last
+        // pre-stop line to land in the buffer.
+        var joined = ""
+        for _ in 0..<20 {
+            joined = try await manager.output(sessionId: sid).map(\.text).joined()
+            if joined.contains("fib(8) = 21") { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(joined.contains("compute(3, 4) = 20"))
+        #expect(joined.contains("fib(8) = 21"))
+        #expect(!joined.contains("done"), "line 80 not executed yet, so 'done' should be unbuffered")
+
+        let chunks = try await manager.output(sessionId: sid)
+        #expect(chunks.allSatisfy { $0.category == "stdout" })
+
+        // Drain, then a fresh read returns nothing new while still stopped.
+        _ = try await manager.output(sessionId: sid, clear: true)
+        #expect(try await manager.output(sessionId: sid).isEmpty)
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()
 

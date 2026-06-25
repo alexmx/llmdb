@@ -25,6 +25,7 @@ import Foundation
 ///   bt            { sessionId?, depth? }                        → { frames }
 ///   locals        { sessionId?, frame? }                        → { locals }
 ///   expand        { sessionId?, variablesReference }            → { children }
+///   output        { sessionId?, clear? }                        → { output }
 ///   threads       { sessionId? }                                → { threads }
 ///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
 ///   stop          { sessionId? }                                → { ok: true }
@@ -283,6 +284,11 @@ public final class Daemon: @unchecked Sendable {
                     sessionId: p.sessionId, variablesReference: p.variablesReference
                 )
                 return encodeOK(id: requestID, result: ExpandResult(children: children))
+
+            case "output":
+                let p = try decode(OutputParams.self)
+                let chunks = try await manager.output(sessionId: p.sessionId, clear: p.clear ?? false)
+                return encodeOK(id: requestID, result: OutputResult(output: chunks))
 
             case "threads":
                 let p = try decode(SessionParams.self)

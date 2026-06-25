@@ -9,7 +9,7 @@ enum LlmdbTools {
             launch, attach, stop, sessions,
             breakSet, breakList, breakDelete,
             continueExec, runUntil, interrupt, step, wait,
-            backtrace, locals, expand, threads, expr,
+            backtrace, locals, expand, threads, expr, output,
             doctor
         ]
     }
@@ -109,6 +109,13 @@ enum LlmdbTools {
     struct ExpandToolArgs: MCPToolInput {
         @InputProperty("variablesReference from a locals/expand entry (must be non-zero)")
         var variables_reference: Int
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
+    struct OutputToolArgs: MCPToolInput {
+        @InputProperty("Drain the buffer so the next call returns only output produced after this one")
+        var clear: Bool?
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
@@ -274,6 +281,13 @@ enum LlmdbTools {
         description: "List threads in a stopped session."
     ) { (args: SessionToolArgs) in
         try await callJSON("threads", SessionParams(sessionId: args.session_id), ThreadsResult.self)
+    }
+
+    static let output = MCPTool(
+        name: "llmdb_output",
+        description: "The target's captured stdout/stderr/console output, oldest first, each chunk tagged with its category. Pass clear=true to drain so the next call returns only newer output."
+    ) { (args: OutputToolArgs) in
+        try await callJSON("output", OutputParams(sessionId: args.session_id, clear: args.clear), OutputResult.self)
     }
 
     static let expr = MCPTool(

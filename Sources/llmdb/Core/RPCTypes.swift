@@ -111,6 +111,11 @@ struct ExpandParams: Codable {
     let variablesReference: Int
 }
 
+struct OutputParams: Codable {
+    let sessionId: String?
+    let clear: Bool?
+}
+
 struct StepParams: Codable {
     let sessionId: String?
     let granularity: StepGranularity
@@ -145,6 +150,10 @@ struct LocalsResult: Codable {
 
 struct ExpandResult: Codable {
     let children: [Local]
+}
+
+struct OutputResult: Codable {
+    let output: [OutputChunk]
 }
 
 struct ThreadsResult: Codable {
