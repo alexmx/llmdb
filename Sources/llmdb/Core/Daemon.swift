@@ -17,6 +17,7 @@ import Foundation
 ///   break.set     { sessionId?, file, line, condition?, hitCondition? } → { snapshot, breakpoint }
 ///   break.list    { sessionId? }                                → { breakpoints }
 ///   break.delete  { sessionId?, id }                            → { breakpoints }
+///   break.exception { sessionId?, filters }                     → { available, enabled }
 ///   continue      { sessionId?, wait? }                         → SessionSnapshot
 ///   run-until     { sessionId?, file, line, wait? }             → { snapshot, breakpoint }
 ///   interrupt     { sessionId?, wait? }                         → SessionSnapshot
@@ -234,6 +235,16 @@ public final class Daemon: @unchecked Sendable {
                 let p = try decode(BreakDeleteParams.self)
                 let bps = try await manager.deleteBreakpoint(sessionId: p.sessionId, id: p.id)
                 return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
+
+            case "break.exception":
+                let p = try decode(BreakExceptionParams.self)
+                let (available, enabled) = try await manager.setExceptionBreakpoints(
+                    sessionId: p.sessionId, filters: p.filters
+                )
+                return encodeOK(
+                    id: requestID,
+                    result: BreakExceptionResult(available: available, enabled: enabled)
+                )
 
             case "continue":
                 let p = try decode(ExecParams.self)

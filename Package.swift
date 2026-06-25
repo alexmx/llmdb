@@ -26,6 +26,11 @@ let package = Package(
             dependencies: [],
             path: "Sources/Fixture"
         ),
+        .executableTarget(
+            name: "llmdb-throw-fixture",
+            dependencies: [],
+            path: "Sources/ThrowFixture"
+        ),
         .testTarget(
             name: "llmdbTests",
             dependencies: ["llmdb"]

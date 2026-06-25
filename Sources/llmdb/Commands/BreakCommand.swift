@@ -5,7 +5,7 @@ struct BreakCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "break",
         abstract: "Manage breakpoints",
-        subcommands: [SetSub.self, ListSub.self, DeleteSub.self]
+        subcommands: [SetSub.self, ListSub.self, DeleteSub.self, ExceptionSub.self]
     )
 
     struct SetSub: AsyncParsableCommand {
@@ -88,6 +88,31 @@ struct BreakCommand: AsyncParsableCommand {
                 method: "break.delete",
                 params: BreakDeleteParams(sessionId: session, id: id),
                 as: BreakListResult.self
+            )
+            try JSONOutput.print(result)
+        }
+    }
+
+    struct ExceptionSub: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "exception",
+            abstract: "Stop on thrown exceptions; pass filter ids to enable, none to clear"
+        )
+
+        @Argument(help: "Filter ids to enable (e.g. swift_throw). Omit to clear and list what's available.")
+        var filters: [String] = []
+
+        @Option(name: .long, help: "Session ID")
+        var session: String?
+
+        @Option(name: .long, help: "Output format")
+        var format: OutputFormat = .default
+
+        func run() async throws {
+            let result = try await DaemonClient.call(
+                method: "break.exception",
+                params: BreakExceptionParams(sessionId: session, filters: filters),
+                as: BreakExceptionResult.self
             )
             try JSONOutput.print(result)
         }

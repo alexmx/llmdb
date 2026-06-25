@@ -2,7 +2,7 @@
 
 > Debug any Mac or iOS Simulator app from your terminal or your AI agent.
 
-Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 19 verbs from the command line or over MCP.
+Wraps `lldb-dap` (Apple's Debug Adapter Protocol shim over LLDB) and gives AI agents a structured, session-oriented debugger. Launch a binary, set a breakpoint, step through code, inspect locals, evaluate expressions — all returning JSON, all driven by the same 20 verbs from the command line or over MCP.
 
 ## See it in action
 
@@ -161,6 +161,8 @@ llmdb sessions
 # Manage breakpoints
 llmdb break set ./Sources/Fixture/main.swift:34
 llmdb break set ./Sources/Fixture/main.swift:49 --condition "index == 2"
+llmdb break exception                 # list available filters (swift_throw, …)
+llmdb break exception swift_throw     # stop when the target throws a Swift error
 llmdb break list
 llmdb break delete 1
 
@@ -191,6 +193,7 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 | `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot | `--condition <expr>`, `--hit-condition <expr>` |
 | `break list` | List breakpoints in the session | — |
 | `break delete <id>` | Remove a breakpoint by id; returns the survivors | — |
+| `break exception [filters…]` | Stop on thrown exceptions; pass adapter filter ids (e.g. `swift_throw`), or none to clear and list available | — |
 
 ### Execution
 

@@ -7,7 +7,7 @@ enum LlmdbTools {
     static var all: [MCPTool] {
         [
             launch, attach, stop, sessions,
-            breakSet, breakList, breakDelete,
+            breakSet, breakList, breakDelete, breakException,
             continueExec, runUntil, interrupt, step, wait,
             backtrace, locals, expand, threads, expr, output,
             doctor
@@ -132,6 +132,15 @@ enum LlmdbTools {
     struct BreakDeleteToolArgs: MCPToolInput {
         @InputProperty("Breakpoint id to delete")
         var id: Int
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
+    struct BreakExceptionToolArgs: MCPToolInput {
+        @InputProperty(
+            "Filter ids to enable (e.g. swift_throw, cpp_catch). Empty array clears them and lists what the adapter supports in `available`."
+        )
+        var filters: [String]
         @InputProperty("Session ID (omit when only one is active)")
         var session_id: String?
     }
@@ -316,6 +325,17 @@ enum LlmdbTools {
             "break.delete",
             BreakDeleteParams(sessionId: args.session_id, id: args.id),
             BreakListResult.self
+        )
+    }
+
+    static let breakException = MCPTool(
+        name: "llmdb_break_exception",
+        description: "Stop when the target throws. Pass adapter filter ids (e.g. swift_throw) to enable; an empty array clears them. The reply lists `available` filters and the `enabled` set. Call with [] first to discover what the adapter supports."
+    ) { (args: BreakExceptionToolArgs) in
+        try await callJSON(
+            "break.exception",
+            BreakExceptionParams(sessionId: args.session_id, filters: args.filters),
+            BreakExceptionResult.self
         )
     }
 

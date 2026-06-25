@@ -20,6 +20,10 @@ actor SessionManager {
         // Trimmed from the front once it exceeds `maxOutputChars`.
         var output: [OutputChunk] = []
         var outputChars = 0
+        // Exception-breakpoint filters the adapter advertised at initialize,
+        // and the subset currently enabled.
+        var exceptionFilters: [ExceptionFilter] = []
+        var enabledExceptionFilters: [String] = []
 
         init(id: String, client: DAPClient, info: Session) {
             self.id = id
@@ -128,6 +132,31 @@ actor SessionManager {
         )
         if let bid = bp.id { entry.breakpoints[bid] = model }
         return (snapshot(entry), model)
+    }
+
+    /// Enable the given exception-breakpoint filters (e.g. `swift_throw`),
+    /// replacing any previously set. An empty list clears them. Returns the
+    /// filters the adapter advertises plus the ids now active. Unknown ids are
+    /// rejected against the advertised set.
+    func setExceptionBreakpoints(
+        sessionId: String?,
+        filters: [String]
+    ) async throws -> (available: [ExceptionFilter], enabled: [String]) {
+        let entry = try resolve(sessionId)
+        let known = Set(entry.exceptionFilters.map(\.id))
+        if let unknown = filters.first(where: { !known.contains($0) }) {
+            throw LlmdbError.invalidArgument(
+                name: "filter",
+                value: unknown,
+                valid: entry.exceptionFilters.map(\.id)
+            )
+        }
+        _ = try await entry.client.request(
+            "setExceptionBreakpoints",
+            arguments: SetExceptionBreakpointsArgs(filters: filters)
+        )
+        entry.enabledExceptionFilters = filters
+        return (entry.exceptionFilters, filters)
     }
 
     func continueExecution(sessionId: String?, wait: Double? = nil) async throws -> SessionSnapshot {
@@ -422,7 +451,7 @@ actor SessionManager {
         // launch/attach is sent — subscribing later races and loses.
         let initWaiter = await entry.client.waitForEvent(timeout: 10) { $0.event == "initialized" }
 
-        _ = try await entry.client.request(
+        let initResp = try await entry.client.request(
             "initialize",
             arguments: InitializeArgs(
                 clientID: "llmdb",
@@ -434,6 +463,13 @@ actor SessionManager {
                 supportsRunInTerminalRequest: false
             )
         )
+        // Remember the adapter's exception-breakpoint filters so `break
+        // exception` can validate ids and report what's available.
+        if let body = try? initResp.decodeBody(InitializeResponseBody.self) {
+            entry.exceptionFilters = (body.exceptionBreakpointFilters ?? []).map {
+                ExceptionFilter(id: $0.filter, label: $0.label, isDefault: $0.default ?? false)
+            }
+        }
 
         switch target {
         case .launched(let binary, let args):

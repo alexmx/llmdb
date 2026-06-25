@@ -17,7 +17,8 @@ llmdb/
 │   │   ├── Models/            # Session, StopReason, Frame, Breakpoint, Thread, …
 │   │   ├── MCP/LlmdbTools.swift  # MCP tools, 1:1 with CLI
 │   │   └── Utilities/         # OutputFormat, JSONOutput, error types, WaitSpec
-│   └── Fixture/main.swift     # llmdb-fixture — see Fixture below
+│   ├── Fixture/main.swift     # llmdb-fixture — see Fixture below
+│   └── ThrowFixture/main.swift # llmdb-throw-fixture — throws a Swift error (exception-BP tests)
 └── Tests/llmdbTests/
 ```
 
@@ -51,6 +52,8 @@ Every verb returns `{sessionId, state, stopReason?, …}` so the agent always kn
 swift run llmdb-fixture quick    # <100ms, launch/break/continue path
 swift run llmdb-fixture attach   # 30s sleep with PID printed, attach path
 ```
+
+`Sources/ThrowFixture/main.swift` (`llmdb-throw-fixture`) is a separate binary that throws a Swift error — used by exception-breakpoint tests. It's separate because adding a throw path to `llmdb-fixture` perturbs that file's debug line tables and breaks its pinned breakpoint line numbers.
 
 ## Smoke harness
 

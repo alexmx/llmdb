@@ -19,6 +19,24 @@ struct InitializeArgs: Encodable {
     let supportsRunInTerminalRequest: Bool
 }
 
+/// `initialize` response body — we only decode the exception-breakpoint
+/// filters the adapter advertises (e.g. swift_throw, cpp_catch).
+struct InitializeResponseBody: Decodable {
+    let exceptionBreakpointFilters: [DAPExceptionFilter]?
+}
+
+struct DAPExceptionFilter: Decodable {
+    let filter: String
+    let label: String?
+    let `default`: Bool?
+}
+
+// MARK: - Exception breakpoints
+
+struct SetExceptionBreakpointsArgs: Encodable {
+    let filters: [String]
+}
+
 // MARK: - Launch / Attach
 
 struct LaunchArgs: Encodable {

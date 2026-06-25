@@ -133,6 +133,11 @@ struct BreakDeleteParams: Codable {
     let id: Int
 }
 
+struct BreakExceptionParams: Codable {
+    let sessionId: String?
+    let filters: [String]
+}
+
 // MARK: - Results
 
 struct BreakSetResult: Codable {
@@ -164,6 +169,11 @@ struct ExprResult: Codable {
     let value: String
     let type: String?
     let variablesReference: Int
+}
+
+struct BreakExceptionResult: Codable {
+    let available: [ExceptionFilter]
+    let enabled: [String]
 }
 
 struct BreakListResult: Codable {

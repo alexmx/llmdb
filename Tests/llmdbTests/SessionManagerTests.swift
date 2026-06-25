@@ -209,6 +209,39 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func exceptionBreakpointStopsOnThrow() async throws {
+        let binary = try throwFixtureBinary()
+        let manager = SessionManager()
+
+        let launch = try await manager.launch(binary: binary, args: [])
+        let sid = launch.sessionId
+
+        // Empty filter list discovers what the adapter advertises without enabling.
+        let (available, enabledNone) = try await manager.setExceptionBreakpoints(sessionId: sid, filters: [])
+        #expect(available.contains { $0.id == "swift_throw" })
+        #expect(enabledNone.isEmpty)
+
+        // Unknown ids are rejected against the advertised set.
+        await #expect(throws: LlmdbError.self) {
+            _ = try await manager.setExceptionBreakpoints(sessionId: sid, filters: ["nope_throw"])
+        }
+
+        // Enable Swift throws, then continue — execution must stop at the throw
+        // site instead of running to exit.
+        let (_, enabled) = try await manager.setExceptionBreakpoints(sessionId: sid, filters: ["swift_throw"])
+        #expect(enabled == ["swift_throw"])
+
+        let stopped = try await manager.continueExecution(sessionId: sid)
+        #expect(stopped.state == .stopped)
+        #expect(stopped.stopReason?.reason == "exception")
+
+        let frames = try await manager.backtrace(sessionId: sid)
+        #expect(frames.contains { $0.name.contains("throwingWork") })
+
+        _ = try await manager.stop(sessionId: sid)
+    }
+
+    @Test
     func capturesProgramOutput() async throws {
         let paths = try fixturePaths()
         let manager = SessionManager()
@@ -305,6 +338,21 @@ struct SessionManagerIntegrationTests {
                     throw Skip("llmdb-fixture not built — run `swift build` before testing")
                 }
                 return (fixture, source)
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        throw Skip("could not locate Package.swift")
+    }
+
+    private func throwFixtureBinary() throws -> String {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while dir.path != "/" {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("Package.swift").path) {
+                let binary = dir.appendingPathComponent(".build/debug/llmdb-throw-fixture").path
+                guard FileManager.default.fileExists(atPath: binary) else {
+                    throw Skip("llmdb-throw-fixture not built — run `swift build` before testing")
+                }
+                return binary
             }
             dir = dir.deletingLastPathComponent()
         }
