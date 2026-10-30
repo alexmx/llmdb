@@ -122,14 +122,20 @@ enum DaemonClient {
                 while true {
                     let r = Darwin.read(fd, raw.baseAddress, raw.count)
                     if r < 0 {
-                        if errno == EINTR { continue }
+                        if errno == EINTR {
+                            continue
+                        }
                         return -Int(errno)
                     }
                     return r
                 }
             }
-            if n < 0 { throw LlmdbError.daemonUnreachable("read failed (errno \(-n))") }
-            if n == 0 { throw LlmdbError.daemonUnreachable("socket closed before response") }
+            if n < 0 {
+                throw LlmdbError.daemonUnreachable("read failed (errno \(-n))")
+            }
+            if n == 0 {
+                throw LlmdbError.daemonUnreachable("socket closed before response")
+            }
             if let nl = chunk[..<n].firstIndex(of: 0x0A) {
                 line.append(contentsOf: chunk[..<nl])
                 // Anything after the newline in this chunk is part of the next

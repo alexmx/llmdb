@@ -50,6 +50,10 @@ enum LlmdbTools {
         var binary: String
         @InputProperty("Arguments forwarded to the binary")
         var args: [String]?
+        @InputProperty(
+            "Seconds lldb-dap may take per setup step before giving up and releasing the target. Omit for 60s."
+        )
+        var timeout: Double?
     }
 
     struct AttachToolArgs: MCPToolInput {
@@ -59,6 +63,10 @@ enum LlmdbTools {
             "iOS Simulator bundle ID (resolved via xcrun simctl in the booted sim). Mutually exclusive with `pid`."
         )
         var app: String?
+        @InputProperty(
+            "Seconds lldb-dap may take per setup step before giving up and releasing the target. Omit for 60s."
+        )
+        var timeout: Double?
     }
 
     struct SessionToolArgs: MCPToolInput {
@@ -122,6 +130,15 @@ enum LlmdbTools {
         var session_id: String?
     }
 
+    struct StopToolArgs: MCPToolInput {
+        @InputProperty(
+            "detach (target keeps running) or terminate (kill it). Omit for the default: terminate launched, detach attached."
+        )
+        var mode: String?
+        @InputProperty("Session ID (omit when only one is active)")
+        var session_id: String?
+    }
+
     struct OutputToolArgs: MCPToolInput {
         @InputProperty("Drain the buffer so the next call returns only output produced after this one")
         var clear: Bool?
@@ -171,7 +188,11 @@ enum LlmdbTools {
         name: "llmdb_launch",
         description: "Launch a binary under lldb-dap; stops on entry. `.app` bundles (or paths inside one) route via LaunchServices so the app registers with AppKit — needed for accessibility / UI automation. Returns sessionId. Next: llmdb_break_set + llmdb_continue, or llmdb_run_until."
     ) { (args: LaunchToolArgs) in
-        try await callJSON("launch", LaunchParams(binary: args.binary, args: args.args), SessionSnapshot.self)
+        try await callJSON(
+            "launch",
+            LaunchParams(binary: args.binary, args: args.args, timeout: args.timeout),
+            SessionSnapshot.self
+        )
     }
 
     static let attach = MCPTool(
@@ -180,16 +201,22 @@ enum LlmdbTools {
     ) { (args: AttachToolArgs) in
         try await callJSON(
             "attach",
-            AttachParams(pid: args.pid.map { Int32($0) }, app: args.app),
+            AttachParams(pid: args.pid.map { Int32($0) }, app: args.app, timeout: args.timeout),
             SessionSnapshot.self
         )
     }
 
     static let stop = MCPTool(
         name: "llmdb_stop",
-        description: "Detach or terminate a session."
-    ) { (args: SessionToolArgs) in
-        try await callJSON("stop", SessionParams(sessionId: args.session_id), StopResult.self)
+        description: "End a session. Default: terminate launched targets, detach from attached ones (target keeps running); override with mode=detach|terminate. Reply's action says what happened: terminated, detached, or exited."
+    ) { (args: StopToolArgs) in
+        let mode = try args.mode.map { raw in
+            guard let m = StopMode(rawValue: raw.lowercased()) else {
+                throw LlmdbError.invalidArgument(name: "mode", value: raw, valid: ["detach", "terminate"])
+            }
+            return m
+        }
+        return try await callJSON("stop", StopParams(sessionId: args.session_id, mode: mode), StopResult.self)
     }
 
     static let sessions = MCPTool(
@@ -348,7 +375,7 @@ enum LlmdbTools {
 
     static let expr = MCPTool(
         name: "llmdb_expr",
-        description: "Evaluate an expression in a stack frame (default frame=0). Use when llmdb_locals isn't enough — field access (self.state.count), method calls, arithmetic over locals."
+        description: "Evaluate an expression in a stack frame (default frame=0). Use when llmdb_locals isn't enough — field access (self.state.count), method calls, arithmetic over locals. Void calls succeed with type \"void\" and an empty value. ObjC works without @import: Foundation and UIKit/AppKit are imported automatically if needed."
     ) { (args: ExprToolArgs) in
         try await callJSON(
             "expr",

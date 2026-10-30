@@ -41,7 +41,9 @@ enum UnixSocketIO {
             while written < raw.count {
                 let n = Darwin.write(fd, base.advanced(by: written), raw.count - written)
                 if n < 0 {
-                    if errno == EINTR { continue }
+                    if errno == EINTR {
+                        continue
+                    }
                     throw LlmdbError.daemonUnreachable("write failed (errno \(errno))")
                 }
                 if n == 0 {

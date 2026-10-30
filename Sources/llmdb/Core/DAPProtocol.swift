@@ -43,6 +43,9 @@ struct LaunchArgs: Encodable {
     let program: String
     let args: [String]
     let stopOnEntry: Bool
+    /// lldb commands run before the target is created. A leading `?` makes
+    /// lldb-dap run them quietly (echoed to the console only on failure).
+    var initCommands: [String] = []
 }
 
 struct AttachArgs: Encodable {
@@ -51,6 +54,14 @@ struct AttachArgs: Encodable {
     /// immediately after `configurationDone` (it considers the session
     /// "complete" with nothing to do).
     let stopOnEntry: Bool
+    /// lldb commands run before the target is created. A leading `?` makes
+    /// lldb-dap run them quietly (echoed to the console only on failure).
+    var initCommands: [String] = []
+}
+
+struct DisconnectArgs: Encodable {
+    /// true kills the target; false detaches and leaves it running.
+    let terminateDebuggee: Bool
 }
 
 // MARK: - Breakpoints

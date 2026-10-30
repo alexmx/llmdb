@@ -8,6 +8,13 @@ import Foundation
 /// for the per-call awaits. No subscriber bookkeeping here.
 actor SessionManager {
     private var sessions: [String: SessionEntry] = [:]
+    /// lldb-dap binary to spawn; nil resolves it via `xcrun`. Tests inject a
+    /// stand-in that never answers to exercise the handshake timeout.
+    private let dapExecutable: String?
+
+    init(dapExecutable: String? = nil) {
+        self.dapExecutable = dapExecutable
+    }
 
     private final class SessionEntry: @unchecked Sendable {
         let id: String
@@ -24,6 +31,13 @@ actor SessionManager {
         // and the subset currently enabled.
         var exceptionFilters: [ExceptionFilter] = []
         var enabledExceptionFilters: [String] = []
+        // Reason to report for a SIGSTOP we caused ourselves: "entry"/"attach"
+        // for the launch/attach pause, "pause" for interrupt. lldb-dap reports
+        // these as "exception", which reads like a crash.
+        var expectedStopReason: String?
+        // Set once we've tried importing Foundation/UIKit/AppKit for ObjC
+        // expressions, so a session pays for the import at most once.
+        var triedObjCImports = false
 
         init(id: String, client: DAPClient, info: Session) {
             self.id = id
@@ -42,8 +56,30 @@ actor SessionManager {
         }
     }
 
+    /// Default seconds each launch/attach handshake step may take. Generous
+    /// because a first attach to a new OS runtime can spend a while loading
+    /// symbols; the point is that a wedged lldb-dap can't freeze the target
+    /// forever.
+    static let defaultHandshakeTimeout: Double = 60
+
     /// Upper bound on buffered output characters per session (~1 MB).
     static let maxOutputChars = 1_000_000
+
+    /// lldb truncates string summaries at 1024 characters by default, which
+    /// cuts off things like `recursiveDescription`. Raise it so `expr` and
+    /// `locals` return whole strings.
+    static let maxStringSummaryLength = 1_000_000
+
+    /// lldb commands run in every new session before the target is created.
+    /// The `?` prefix keeps lldb-dap from echoing them into the target's
+    /// captured output (it prints them only if they fail).
+    private static let initCommands = [
+        "?settings set target.max-string-summary-length \(maxStringSummaryLength)"
+    ]
+
+    /// lldb-dap fails `evaluate` with this message when the expression ran but
+    /// produced no value (e.g. a call returning `void`).
+    private static let noResultMessage = "unknown error"
 
     // MARK: - Public API
 
@@ -55,25 +91,30 @@ actor SessionManager {
     /// `break set` calls have a quiescent target. For `.app` bundles, routes
     /// through LaunchServices so the process is registered with WindowServer/
     /// AppKit (required for AX-driven tools to see the app).
-    func launch(binary: String, args: [String]) async throws -> SessionSnapshot {
+    func launch(binary: String, args: [String], timeout: Double? = nil) async throws -> SessionSnapshot {
         if let appURL = AppBundleLauncher.appBundleURL(for: binary) {
             let pid = try await AppBundleLauncher.openApplication(at: appURL, args: args)
-            return try await attach(pid: pid)
+            return try await attach(pid: pid, timeout: timeout)
         }
-        return try await openSession(target: .launched(binary: binary, args: args))
+        return try await openSession(target: .launched(binary: binary, args: args), timeout: timeout)
     }
 
     /// Attach to a running process. lldb-dap pauses the target on attach,
     /// so the returned snapshot is `.stopped`.
-    func attach(pid: Int32) async throws -> SessionSnapshot {
-        try await openSession(target: .attached(pid: pid))
+    func attach(pid: Int32, timeout: Double? = nil) async throws -> SessionSnapshot {
+        try await openSession(target: .attached(pid: pid), timeout: timeout)
     }
 
     /// Common path for launch/attach: open a DAPClient, run the handshake,
-    /// register the session (or roll back on failure).
-    private func openSession(target: Session.Target) async throws -> SessionSnapshot {
+    /// register the session (or roll back on failure). Each handshake step
+    /// gets `timeout` seconds (default `defaultHandshakeTimeout`).
+    private func openSession(target: Session.Target, timeout: Double?) async throws -> SessionSnapshot {
+        let timeout = timeout ?? Self.defaultHandshakeTimeout
+        guard timeout > 0 else {
+            throw LlmdbError.invalidArgument(name: "timeout", value: "\(timeout)", valid: ["seconds > 0"])
+        }
         let id = Self.makeID()
-        let client = try await DAPClient.spawn()
+        let client = try await DAPClient.spawn(executable: dapExecutable)
         let entry = SessionEntry(
             id: id,
             client: client,
@@ -83,13 +124,28 @@ actor SessionManager {
         startListener(entry)
 
         do {
-            try await handshake(entry, target: target)
+            try await handshake(entry, target: target, timeout: timeout)
         } catch {
+            // Killing lldb-dap releases the target: debugserver detaches an
+            // attached process (it resumes) and kills a launched one.
             await client.terminate()
             sessions.removeValue(forKey: id)
+            if case DAPError.timedOut = error {
+                throw LlmdbError.dapFailure(Self.handshakeTimeoutMessage(target: target, timeout: timeout))
+            }
             throw error
         }
         return snapshot(entry)
+    }
+
+    private static func handshakeTimeoutMessage(target: Session.Target, timeout: Double) -> String {
+        let seconds = timeout.formatted()
+        switch target {
+        case .launched:
+            return "launch timed out after \(seconds)s waiting for lldb-dap; the launched process was terminated. Retry, or pass a longer timeout."
+        case .attached, .simulator:
+            return "attach timed out after \(seconds)s waiting for lldb-dap; the target was detached and left running. A first attach to a new OS runtime can be slow while lldb loads symbols — retry, or pass a longer timeout."
+        }
     }
 
     func setBreakpoint(
@@ -130,7 +186,9 @@ actor SessionManager {
             condition: condition,
             hitCondition: hitCondition
         )
-        if let bid = bp.id { entry.breakpoints[bid] = model }
+        if let bid = bp.id {
+            entry.breakpoints[bid] = model
+        }
         return (snapshot(entry), model)
     }
 
@@ -212,6 +270,9 @@ actor SessionManager {
     ) async throws -> SessionSnapshot {
         let entry = try resolve(sessionId)
         let threadId = entry.stoppedThreadId ?? 1
+        // Only our own `pause` produces a SIGSTOP worth relabeling; any other
+        // command's stop is reported as lldb-dap describes it.
+        entry.expectedStopReason = command == "pause" ? "pause" : nil
 
         if wait == 0 {
             _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
@@ -253,14 +314,71 @@ actor SessionManager {
         guard let frame = frames.first else {
             throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
         }
+        do {
+            return try await evaluate(entry, expression: expression, frameId: frame.id)
+        } catch DAPError.responseError(let command, let message)
+            where !entry.triedObjCImports && Self.isClangCompileError(message) {
+            // In a frame without debug info (e.g. right after attach) lldb
+            // compiles as Objective-C++ with no framework declarations, so
+            // ObjC calls fail until Foundation/UIKit are imported. Import them
+            // once and retry — safe, since a compile error means nothing ran.
+            entry.triedObjCImports = true
+            guard await importObjCModules(entry, frameId: frame.id) else {
+                throw DAPError.responseError(command: command, message: message)
+            }
+            return try await evaluate(entry, expression: expression, frameId: frame.id)
+        }
+    }
+
+    /// Single `evaluate` round-trip, with void results reported as success.
+    private func evaluate(
+        _ entry: SessionEntry,
+        expression: String,
+        frameId: Int
+    ) async throws -> (value: String, type: String?, variablesReference: Int) {
         // context="watch" returns just the value (e.g. "20") instead of the
         // REPL's verbose "(Int) $R0 = 20" form. Closer to what locals returns.
-        let resp = try await entry.client.request(
-            "evaluate",
-            arguments: EvaluateArgs(expression: expression, frameId: frame.id, context: "watch")
-        )
+        let resp: DAPResponse
+        do {
+            resp = try await entry.client.request(
+                "evaluate",
+                arguments: EvaluateArgs(expression: expression, frameId: frameId, context: "watch")
+            )
+        } catch DAPError.responseError(_, let message) where message == Self.noResultMessage {
+            // The expression ran; it just has no value (void call). Report
+            // success — retrying would repeat its side effects.
+            return ("", "void", 0)
+        }
         let body = try resp.decodeBody(EvaluateBody.self)
         return (body.result, body.type, body.variablesReference)
+    }
+
+    /// Import Foundation, plus UIKit or AppKit when the target has loaded it,
+    /// into the session's expression context. Imports persist for later
+    /// expressions. Returns false if even Foundation couldn't be imported.
+    private func importObjCModules(_ entry: SessionEntry, frameId: Int) async -> Bool {
+        guard await (try? evaluate(entry, expression: "@import Foundation", frameId: frameId)) != nil else {
+            return false
+        }
+        for (uiClass, module) in [("UIApplication", "UIKit"), ("NSApplication", "AppKit")] {
+            let loaded = try? await evaluate(
+                entry,
+                expression: "(int)(NSClassFromString(@\"\(uiClass)\") != nil)",
+                frameId: frameId
+            )
+            if loaded?.value == "1" {
+                _ = try? await evaluate(entry, expression: "@import \(module)", frameId: frameId)
+                break
+            }
+        }
+        return true
+    }
+
+    /// True for a clang (C/ObjC) compile error. Swift errors cite `<EXPR>`
+    /// instead, and runtime failures ("Execution was interrupted") cite
+    /// neither — those must never be retried.
+    private static func isClangCompileError(_ message: String) -> Bool {
+        message.contains("<user expression")
     }
 
     /// All breakpoints currently tracked for the session, sorted by id.
@@ -463,13 +581,38 @@ actor SessionManager {
         return chunks
     }
 
+    /// End a session. `mode` nil → terminate launched targets, detach from
+    /// attached ones (the target keeps running). Returns what happened:
+    /// "terminated", "detached", or "exited" if the target had already ended.
     @discardableResult
-    func stop(sessionId: String?) async throws -> Bool {
+    func stop(sessionId: String?, mode: StopMode? = nil) async throws -> String {
         let entry = try resolve(sessionId)
-        entry.listener?.cancel()
-        await entry.client.terminate()
         sessions.removeValue(forKey: entry.id)
-        return true
+        entry.listener?.cancel()
+
+        let action: String
+        if entry.info.state == .terminated {
+            action = "exited"
+        } else {
+            let mode = mode ?? Self.defaultStopMode(for: entry.info.target)
+            // Best effort: if lldb-dap is wedged, terminating it below still
+            // ends the session (and detaches/kills the target as a side effect).
+            _ = try? await entry.client.request(
+                "disconnect",
+                arguments: DisconnectArgs(terminateDebuggee: mode == .terminate),
+                timeout: 5
+            )
+            action = mode.action
+        }
+        await entry.client.terminate()
+        return action
+    }
+
+    private static func defaultStopMode(for target: Session.Target) -> StopMode {
+        switch target {
+        case .launched: .terminate
+        case .attached, .simulator: .detach
+        }
     }
 
     // MARK: - Internals
@@ -479,8 +622,12 @@ actor SessionManager {
             guard let entry = sessions[sessionId] else { throw LlmdbError.sessionNotFound(sessionId) }
             return entry
         }
-        if sessions.count == 1, let only = sessions.values.first { return only }
-        if sessions.isEmpty { throw LlmdbError.sessionNotFound("(none active)") }
+        if sessions.count == 1, let only = sessions.values.first {
+            return only
+        }
+        if sessions.isEmpty {
+            throw LlmdbError.sessionNotFound("(none active)")
+        }
         throw LlmdbError.sessionNotFound("(multiple active; pass --session)")
     }
 
@@ -506,11 +653,11 @@ actor SessionManager {
         return try resp.decodeBody(StackTraceBody.self).stackFrames
     }
 
-    private func handshake(_ entry: SessionEntry, target: Session.Target) async throws {
+    private func handshake(_ entry: SessionEntry, target: Session.Target, timeout: Double) async throws {
         // Subscribe to `initialized` BEFORE sending the initialize request.
         // lldb-dap can emit it right after the initialize response, before
         // launch/attach is sent — subscribing later races and loses.
-        let initWaiter = await entry.client.waitForEvent(timeout: 10) { $0.event == "initialized" }
+        let initWaiter = await entry.client.waitForEvent(timeout: timeout) { $0.event == "initialized" }
 
         let initResp = try await entry.client.request(
             "initialize",
@@ -522,7 +669,8 @@ actor SessionManager {
                 columnsStartAt1: true,
                 pathFormat: "path",
                 supportsRunInTerminalRequest: false
-            )
+            ),
+            timeout: timeout
         )
         // Remember the adapter's exception-breakpoint filters so `break
         // exception` can validate ids and report what's available.
@@ -534,14 +682,23 @@ actor SessionManager {
 
         switch target {
         case .launched(let binary, let args):
+            entry.expectedStopReason = "entry"
             _ = try await entry.client.request(
                 "launch",
-                arguments: LaunchArgs(program: binary, args: args, stopOnEntry: true)
+                arguments: LaunchArgs(
+                    program: binary,
+                    args: args,
+                    stopOnEntry: true,
+                    initCommands: Self.initCommands
+                ),
+                timeout: timeout
             )
         case .attached(let pid):
+            entry.expectedStopReason = "attach"
             _ = try await entry.client.request(
                 "attach",
-                arguments: AttachArgs(pid: Int(pid), stopOnEntry: true)
+                arguments: AttachArgs(pid: Int(pid), stopOnEntry: true, initCommands: Self.initCommands),
+                timeout: timeout
             )
         case .simulator:
             throw LlmdbError.notImplemented("simulator attach")
@@ -551,9 +708,12 @@ actor SessionManager {
 
         // After `initialized`, send configurationDone; the stopOnEntry stop
         // arrives shortly after.
-        let stopWaiter = await entry.client.waitForEvent(timeout: 10, matching: Self.isStopOrExit)
-        _ = try await entry.client.request("configurationDone")
-        _ = try await stopWaiter.value
+        let stopWaiter = await entry.client.waitForEvent(timeout: timeout, matching: Self.isStopOrExit)
+        _ = try await entry.client.request("configurationDone", timeout: timeout)
+        // Apply the stop here rather than relying on the listener, which may
+        // not have processed it yet when we return the snapshot.
+        let stop = try await stopWaiter.value
+        await handleEvent(stop, entryID: entry.id)
     }
 
     private func startListener(_ entry: SessionEntry) {
@@ -572,9 +732,13 @@ actor SessionManager {
         switch event.event {
         case "stopped":
             if let body = try? event.decodeBody(StoppedEventBody.self) {
+                var reason = body.reason
+                if let expected = entry.expectedStopReason, Self.isRequestedPause(body) {
+                    reason = expected
+                }
                 entry.info.state = .stopped
                 entry.info.stopReason = StopReason(
-                    reason: body.reason,
+                    reason: reason,
                     threadID: body.threadId ?? entry.stoppedThreadId ?? 1,
                     description: body.description,
                     hitBreakpointIDs: body.hitBreakpointIds
@@ -625,6 +789,12 @@ actor SessionManager {
     /// it either stopped at a breakpoint/step or the target ended.
     private static let isStopOrExit: @Sendable (DAPEvent) -> Bool = {
         $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+    }
+
+    /// A stop lldb-dap may report for a pause we requested: SIGSTOP (as
+    /// "exception"), or a plain "entry"/"pause" on some targets.
+    private static func isRequestedPause(_ body: StoppedEventBody) -> Bool {
+        ["entry", "pause"].contains(body.reason) || body.description?.contains("SIGSTOP") == true
     }
 
     private static let unverifiedBreakpointMessage =

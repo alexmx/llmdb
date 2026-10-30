@@ -5,6 +5,7 @@ enum DAPError: Error, CustomStringConvertible {
     case missingBody
     case unexpectedMessageType(String)
     case responseError(command: String, message: String)
+    case timedOut(command: String, seconds: Double)
     case closed
     case launchFailed(String)
 
@@ -14,6 +15,7 @@ enum DAPError: Error, CustomStringConvertible {
         case .missingBody: "DAP message had no body"
         case .unexpectedMessageType(let t): "unexpected DAP message type: \(t)"
         case .responseError(let cmd, let msg): "DAP \(cmd) failed: \(msg)"
+        case .timedOut(let cmd, let seconds): "DAP \(cmd) timed out after \(seconds)s"
         case .closed: "DAP connection closed"
         case .launchFailed(let reason): "could not launch lldb-dap: \(reason)"
         }

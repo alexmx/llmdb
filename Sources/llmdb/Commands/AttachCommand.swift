@@ -13,6 +13,12 @@ struct AttachCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Bundle ID of an app running in the booted iOS Simulator (resolved via xcrun simctl)")
     var app: String?
 
+    @Option(
+        name: .long,
+        help: "Seconds lldb-dap may take per setup step before giving up and releasing the target (default 60)"
+    )
+    var timeout: Double?
+
     @Option(name: .long, help: "Output format")
     var format: OutputFormat = .default
 
@@ -30,7 +36,7 @@ struct AttachCommand: AsyncParsableCommand {
     func run() async throws {
         let snap = try await DaemonClient.call(
             method: "attach",
-            params: AttachParams(pid: pid, app: app),
+            params: AttachParams(pid: pid, app: app, timeout: timeout),
             as: SessionSnapshot.self
         )
         try JSONOutput.print(snap)

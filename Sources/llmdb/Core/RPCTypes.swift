@@ -51,17 +51,42 @@ enum StepGranularity: String, Codable, EnumerableFlag {
     }
 }
 
+/// What `stop` does to the target. Omitted → terminate launched targets,
+/// detach from attached ones.
+enum StopMode: String, Codable, EnumerableFlag {
+    case detach, terminate
+
+    /// Past-tense label reported back to the caller.
+    var action: String {
+        switch self {
+        case .detach: "detached"
+        case .terminate: "terminated"
+        }
+    }
+
+    static func help(for value: StopMode) -> ArgumentHelp? {
+        switch value {
+        case .detach: "Detach and leave the target running"
+        case .terminate: "Kill the target"
+        }
+    }
+}
+
 // MARK: - Params
 
 struct LaunchParams: Codable {
     let binary: String
     let args: [String]?
+    /// Seconds each handshake step may take; nil → daemon default (60).
+    var timeout: Double?
 }
 
 /// Attach by PID OR by iOS Simulator bundle ID. Exactly one must be set.
 struct AttachParams: Codable {
     let pid: Int32?
     let app: String?
+    /// Seconds each handshake step may take; nil → daemon default (60).
+    var timeout: Double?
 }
 
 struct SessionParams: Codable {
@@ -122,6 +147,11 @@ struct SetVarParams: Codable {
     let target: String
     let value: String
     let frame: Int?
+}
+
+struct StopParams: Codable {
+    let sessionId: String?
+    let mode: StopMode?
 }
 
 struct OutputParams: Codable {
@@ -203,4 +233,6 @@ struct BreakListResult: Codable {
 
 struct StopResult: Codable {
     let ok: Bool
+    /// "detached" (target left running) or "terminated" (target killed).
+    let action: String
 }

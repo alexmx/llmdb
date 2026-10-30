@@ -15,7 +15,7 @@ llmdb launch ./.build/debug/llmdb-fixture quick
 {
   "sessionId" : "2649sk",
   "state" : "stopped",
-  "stopReason" : { "reason" : "exception", "description" : "signal SIGSTOP", ... }
+  "stopReason" : { "reason" : "entry", "description" : "signal SIGSTOP", ... }
 }
 ```
 
@@ -42,7 +42,7 @@ llmdb run-until ./Sources/Fixture/main.swift:35
 llmdb bt --depth 3
 { "frames" : [
     { "name" : "compute(x:y:)", "line" : 35, "source" : ".../main.swift", ... },
-    { "name" : "llmdb_fixture_main", "line" : 63, ... },
+    { "name" : "main", "line" : 63, ... },
     { "name" : "start", "source" : "/usr/lib/dyld`start", ... }
 ]}
 ```
@@ -97,7 +97,7 @@ llmdb set-var counter 100
 { "variable" : { "name" : "counter", "type" : "Int", "value" : "100", "variablesReference" : 0 } }
 ```
 
-`output` returns whatever the target wrote to stdout/stderr while running — so you can see what the program printed, not just its state:
+`output` returns whatever the target wrote to stdout/stderr while running — so you can see what the program printed, not just its state. Further into the run (e.g. at the line-80 breakpoint):
 
 ```bash
 llmdb output
@@ -118,7 +118,7 @@ llmdb step --over
 
 ```bash
 llmdb bt --depth 1
-{ "frames" : [{ "name" : "llmdb_fixture_main", "line" : 62, ... }] }
+{ "frames" : [{ "name" : "main", "line" : 63, ... }] }
 ```
 
 `--over` / `--in` / `--out` are mutually exclusive flags; default is `--over`.
@@ -127,7 +127,7 @@ llmdb bt --depth 1
 
 ```bash
 llmdb stop
-{ "ok" : true }
+{ "ok" : true, "action" : "terminated" }
 ```
 
 ## Install
@@ -198,9 +198,9 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 
 | Command | Description | Key options |
 |---|---|---|
-| `launch <binary> [-- args…]` | Launch a binary or `.app` bundle under `lldb-dap`. Stops on entry. | `.app` bundles (or paths inside one) route via LaunchServices so the app registers with AppKit — needed for accessibility / UI-automation tools to see the process |
-| `attach` | Attach to a running process or Simulator app | `--pid N` OR `--app <bundle-id>` (exactly one) |
-| `stop` | Detach / terminate the session | `--session ID` |
+| `launch <binary> [-- args…]` | Launch a binary or `.app` bundle under `lldb-dap`. Stops on entry. | `.app` bundles (or paths inside one) route via LaunchServices so the app registers with AppKit — needed for accessibility / UI-automation tools to see the process. `--timeout <seconds>` (default 60) caps each setup step; on expiry the process is terminated and an error returned |
+| `attach` | Attach to a running process or Simulator app | `--pid N` OR `--app <bundle-id>` (exactly one); `--timeout <seconds>` (default 60) caps each setup step — on expiry the target is detached and left running, never left frozen |
+| `stop` | End the session. Launched targets are terminated, attached ones detached (left running); `action` reports which | `--detach`, `--terminate`, `--session ID` |
 | `sessions` | List active debug sessions | — |
 
 ### Breakpoints
@@ -233,7 +233,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 | `expand <ref>` | Drill into a structured value by its `variablesReference` | — |
 | `scopes` | List a frame's scopes (Locals, Globals, Registers) with refs to `expand` | `--frame N`, `--thread N` |
 | `threads` | List threads in the session | — |
-| `expr <expression>` | Evaluate in the context of a frame | `--frame N` |
+| `expr <expression>` | Evaluate in the context of a frame. Strings are returned in full (up to 1M chars); void calls succeed with `type: "void"`. In frames without debug info (e.g. right after attach), Foundation and UIKit/AppKit are imported automatically on the first ObjC compile error | `--frame N` |
 | `set-var <target> <value>` | Assign a new value to a variable (or lvalue like `self.x`) during a stop | `--frame N` |
 | `output` | Captured stdout/stderr/console output from the target | `--clear` (drain the buffer) |
 

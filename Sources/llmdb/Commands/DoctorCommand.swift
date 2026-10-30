@@ -14,7 +14,9 @@ struct DoctorCommand: AsyncParsableCommand {
     func run() async throws {
         let report = await Doctor.runChecks()
         try JSONOutput.print(report)
-        if !report.allOK { throw ExitCode.failure }
+        if !report.allOK {
+            throw ExitCode.failure
+        }
     }
 }
 

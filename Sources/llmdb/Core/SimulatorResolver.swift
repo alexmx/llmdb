@@ -85,7 +85,9 @@ enum SimulatorResolver {
             let data = try await runStdout(["/usr/bin/pgrep", "-f", "\(udid).*\(binaryName)"])
             let str = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             for line in str.split(separator: "\n") {
-                if let pid = Int32(line) { return pid }
+                if let pid = Int32(line) {
+                    return pid
+                }
             }
             throw LlmdbError.daemonUnreachable("`\(binaryName)` not running in simulator \(udid)")
         } catch let LlmdbError.daemonUnreachable(msg) where msg.contains("exited 1") {

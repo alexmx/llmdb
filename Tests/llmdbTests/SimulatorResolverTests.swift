@@ -39,7 +39,7 @@ struct SimulatorResolverTests {
 
     @Test
     func picksBootedDevice() throws {
-        let json = #"""
+        let json = try #require(#"""
         {
           "devices": {
             "com.apple.CoreSimulator.SimRuntime.iOS-17-0": [
@@ -48,24 +48,24 @@ struct SimulatorResolverTests {
             ]
           }
         }
-        """#.data(using: .utf8)!
+        """#.data(using: .utf8))
         let udid = try SimulatorResolver.parseBootedUDID(json: json)
         #expect(udid == "ACTIVE-1")
     }
 
     @Test
-    func throwsWhenNoneBooted() {
-        let json = #"""
+    func throwsWhenNoneBooted() throws {
+        let json = try #require(#"""
         { "devices": { "com.apple.CoreSimulator.SimRuntime.iOS-17-0": [] } }
-        """#.data(using: .utf8)!
+        """#.data(using: .utf8))
         #expect(throws: LlmdbError.self) {
             try SimulatorResolver.parseBootedUDID(json: json)
         }
     }
 
     @Test
-    func throwsOnShapeMismatch() {
-        let json = #"{ "wrong": true }"#.data(using: .utf8)!
+    func throwsOnShapeMismatch() throws {
+        let json = try #require(#"{ "wrong": true }"#.data(using: .utf8))
         #expect(throws: LlmdbError.self) {
             try SimulatorResolver.parseBootedUDID(json: json)
         }

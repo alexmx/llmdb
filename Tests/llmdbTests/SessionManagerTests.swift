@@ -9,11 +9,11 @@ struct SessionManagerIntegrationTests {
         let paths = try fixturePaths()
         let manager = SessionManager()
 
-        // 1. launch — stops on entry (lldb-dap reports the entry stop as
-        // "exception" on Swift binaries, not "entry"; just check we're stopped)
+        // 1. launch — stops on entry. lldb-dap reports that SIGSTOP as
+        // "exception"; SessionManager relabels it "entry".
         let launchSnap = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
         #expect(launchSnap.state == .stopped)
-        #expect(launchSnap.stopReason != nil)
+        #expect(launchSnap.stopReason?.reason == "entry")
         let sessionID = launchSnap.sessionId
 
         // 2. break set
@@ -59,6 +59,9 @@ struct SessionManagerIntegrationTests {
         #expect(totalExpr.value == "20")
         let sumPlusDiff = try await manager.evaluate(sessionId: sessionID, expression: "sum + diff")
         #expect(sumPlusDiff.value == "8") // 7 + 1
+        // Strings past lldb's default 1024-char summary cap come back whole.
+        let long = try await manager.evaluate(sessionId: sessionID, expression: #"String(repeating: "a", count: 3000)"#)
+        #expect(long.value.count(where: { $0 == "a" }) == 3000)
 
         // 8. break list / break delete round-trip
         let beforeDelete = try await manager.listBreakpoints(sessionId: sessionID)
@@ -76,9 +79,9 @@ struct SessionManagerIntegrationTests {
         // Top frame should no longer be inside compute()
         #expect(!afterStep[0].name.contains("compute"))
 
-        // 10. stop — clean teardown
-        let stopped = try await manager.stop(sessionId: sessionID)
-        #expect(stopped == true)
+        // 10. stop — launched targets are terminated by default
+        let action = try await manager.stop(sessionId: sessionID)
+        #expect(action == "terminated")
         #expect(await manager.list().isEmpty)
     }
 
@@ -313,7 +316,9 @@ struct SessionManagerIntegrationTests {
         var joined = ""
         for _ in 0..<20 {
             joined = try await manager.output(sessionId: sid).map(\.text).joined()
-            if joined.contains("fib(8) = 21") { break }
+            if joined.contains("fib(8) = 21") {
+                break
+            }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         #expect(joined.contains("compute(3, 4) = 20"))
@@ -342,7 +347,9 @@ struct SessionManagerIntegrationTests {
         proc.arguments = ["-c", "\(paths.fixtureBinary) attach > /dev/null 2>&1"]
         try proc.run()
         defer {
-            if proc.isRunning { proc.terminate() }
+            if proc.isRunning {
+                proc.terminate()
+            }
         }
         // Give the fixture ~200ms to enter its sleep loop.
         try await Task.sleep(nanoseconds: 250_000_000)
@@ -354,6 +361,19 @@ struct SessionManagerIntegrationTests {
         let manager = SessionManager()
         let attachSnap = try await manager.attach(pid: pid)
         #expect(attachSnap.state == .stopped) // lldb-dap pauses on attach
+        #expect(attachSnap.stopReason?.reason == "attach") // not lldb-dap's "exception"
+
+        // A void call runs and succeeds (lldb-dap reports it as "unknown error").
+        let void = try await manager.evaluate(sessionId: attachSnap.sessionId, expression: "(void)getpid()")
+        #expect(void.type == "void")
+
+        // The top frame has no debug info, so lldb compiles ObjC without any
+        // framework declarations. evaluate imports Foundation and retries.
+        let objc = try await manager.evaluate(
+            sessionId: attachSnap.sessionId,
+            expression: #"[NSString stringWithFormat:@"%d", 5]"#
+        )
+        #expect(objc.value.hasSuffix(#"@"5""#))
 
         // threads should report at least the main thread
         let threads = try await manager.threads(sessionId: attachSnap.sessionId)
@@ -361,7 +381,27 @@ struct SessionManagerIntegrationTests {
 
         // detach (interrupt while-running is racy against the fixture's
         // sleep loop; covered separately in the launch test's step path).
-        _ = try await manager.stop(sessionId: attachSnap.sessionId)
+        // Attached targets are detached by default and keep running.
+        let action = try await manager.stop(sessionId: attachSnap.sessionId)
+        #expect(action == "detached")
+        #expect(await manager.list().isEmpty)
+        #expect(kill(pid, 0) == 0, "detached target should still be alive")
+    }
+
+    @Test
+    func handshakeTimesOutWhenLLDBDAPHangs() async throws {
+        // /bin/cat stands in for a wedged lldb-dap: it never answers (it just
+        // echoes our requests back, which DAPClient ignores).
+        let manager = SessionManager(dapExecutable: "/bin/cat")
+        let start = Date()
+        do {
+            _ = try await manager.attach(pid: getpid(), timeout: 0.5)
+            Issue.record("attach should have timed out")
+        } catch {
+            #expect("\(error)".contains("timed out after 0.5s"))
+            #expect("\(error)".contains("detached and left running"))
+        }
+        #expect(Date().timeIntervalSince(start) < 5)
         #expect(await manager.list().isEmpty)
     }
 

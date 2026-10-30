@@ -136,8 +136,12 @@ public final class Daemon: @unchecked Sendable {
         while true {
             let clientFD = Darwin.accept(listenFD, nil, nil)
             if clientFD < 0 {
-                if errno == EAGAIN || errno == EWOULDBLOCK { return }
-                if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    return
+                }
+                if errno == EINTR {
+                    continue
+                }
                 return
             }
             // On BSD/macOS the accepted socket inherits the listen socket's
@@ -160,19 +164,25 @@ public final class Daemon: @unchecked Sendable {
                 while true {
                     let r = Darwin.read(fd, raw.baseAddress, raw.count)
                     if r < 0 {
-                        if errno == EINTR { continue }
+                        if errno == EINTR {
+                            continue
+                        }
                         return -Int(errno)
                     }
                     return r
                 }
             }
-            if n <= 0 { return } // error or EOF
+            if n <= 0 {
+                return
+            } // error or EOF
             buffer.append(contentsOf: readBuf.prefix(n))
 
             while let nlIndex = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[buffer.startIndex..<nlIndex]
                 buffer.removeSubrange(buffer.startIndex...nlIndex)
-                if line.isEmpty { continue }
+                if line.isEmpty {
+                    continue
+                }
 
                 let response = await dispatch(messageBytes: Data(line), manager: manager)
                 var bytes = response
@@ -204,13 +214,13 @@ public final class Daemon: @unchecked Sendable {
             switch method {
             case "launch":
                 let p = try decode(LaunchParams.self)
-                let snap = try await manager.launch(binary: p.binary, args: p.args ?? [])
+                let snap = try await manager.launch(binary: p.binary, args: p.args ?? [], timeout: p.timeout)
                 return encodeOK(id: requestID, result: snap)
 
             case "attach":
                 let p = try decode(AttachParams.self)
                 let pid = try await resolveAttachPID(p)
-                let snap = try await manager.attach(pid: pid)
+                let snap = try await manager.attach(pid: pid, timeout: p.timeout)
                 return encodeOK(id: requestID, result: snap)
 
             case "sessions":
@@ -335,9 +345,9 @@ public final class Daemon: @unchecked Sendable {
                 ))
 
             case "stop":
-                let p = try decode(SessionParams.self)
-                _ = try await manager.stop(sessionId: p.sessionId)
-                return encodeOK(id: requestID, result: StopResult(ok: true))
+                let p = try decode(StopParams.self)
+                let action = try await manager.stop(sessionId: p.sessionId, mode: p.mode)
+                return encodeOK(id: requestID, result: StopResult(ok: true, action: action))
 
             default:
                 return encodeError(id: requestID, message: "unknown method: \(method)")

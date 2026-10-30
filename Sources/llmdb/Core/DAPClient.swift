@@ -28,7 +28,11 @@ actor DAPClient {
     /// off the calling task (via `xcrun --find lldb-dap`) before constructing
     /// the actor, so the blocking lookup doesn't park an actor's executor.
     static func spawn(executable: String? = nil) async throws -> DAPClient {
-        let path = if let executable { executable } else { await Self.resolveExecutable() }
+        let path = if let executable {
+            executable
+        } else {
+            await Self.resolveExecutable()
+        }
         return try DAPClient(executablePath: path)
     }
 
@@ -68,7 +72,9 @@ actor DAPClient {
 
     deinit {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+        }
         for (_, cont) in subscribers {
             cont.finish()
         }
@@ -78,7 +84,9 @@ actor DAPClient {
         guard !closed else { return }
         closed = true
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+        }
         finishSubscribersAndPending()
     }
 
@@ -133,7 +141,7 @@ actor DAPClient {
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                    throw DAPError.responseError(command: "waitForEvent", message: "timed out after \(timeout)s")
+                    throw DAPError.timedOut(command: "waitForEvent", seconds: timeout)
                 }
                 let event = try await group.next()!
                 group.cancelAll()
@@ -148,17 +156,26 @@ actor DAPClient {
 
     // MARK: - Requests
 
-    func request(_ command: String) async throws -> DAPResponse {
-        try await request(command, arguments: EmptyArgs())
+    func request(_ command: String, timeout: Double? = nil) async throws -> DAPResponse {
+        try await request(command, arguments: EmptyArgs(), timeout: timeout)
     }
 
+    /// Send a request and await its response. With `timeout` (seconds), the
+    /// call fails if lldb-dap hasn't answered in time instead of hanging.
     func request(
         _ command: String,
-        arguments: some Encodable & Sendable
+        arguments: some Encodable & Sendable,
+        timeout: Double? = nil
     ) async throws -> DAPResponse {
         guard !closed else { throw DAPError.closed }
         nextSeq += 1
         let seq = nextSeq
+        if let timeout {
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                await self?.expire(seq: seq, command: command, after: timeout)
+            }
+        }
 
         let body = try JSONEncoder().encode(
             DAPRequestEnvelope(seq: seq, command: command, arguments: arguments)
@@ -175,6 +192,12 @@ actor DAPClient {
                 cont.resume(throwing: error)
             }
         }
+    }
+
+    /// Fail a still-pending request whose timeout elapsed. No-op if the
+    /// response already arrived.
+    private func expire(seq: Int, command: String, after timeout: Double) {
+        pending.removeValue(forKey: seq)?.resume(throwing: DAPError.timedOut(command: command, seconds: timeout))
     }
 
     // MARK: - Read pipeline
@@ -272,7 +295,9 @@ actor DAPClient {
                 let data = out.fileHandleForReading.readDataToEndOfFile()
                 let path = String(decoding: data, as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !path.isEmpty { return path }
+                if !path.isEmpty {
+                    return path
+                }
             } catch {
                 // Fall through to PATH lookup.
             }

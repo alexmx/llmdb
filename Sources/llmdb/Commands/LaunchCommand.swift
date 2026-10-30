@@ -13,6 +13,12 @@ struct LaunchCommand: AsyncParsableCommand {
     @Argument(parsing: .captureForPassthrough, help: "Arguments forwarded to the binary")
     var arguments: [String] = []
 
+    @Option(
+        name: .long,
+        help: "Seconds lldb-dap may take per setup step before giving up and releasing the target (default 60)"
+    )
+    var timeout: Double?
+
     @Option(name: .long, help: "Output format")
     var format: OutputFormat = .default
 
@@ -22,7 +28,7 @@ struct LaunchCommand: AsyncParsableCommand {
             : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(binary)
         let snap = try await DaemonClient.call(
             method: "launch",
-            params: LaunchParams(binary: resolved, args: arguments),
+            params: LaunchParams(binary: resolved, args: arguments, timeout: timeout),
             as: SessionSnapshot.self
         )
         try JSONOutput.print(snap)
