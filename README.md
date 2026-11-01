@@ -19,7 +19,7 @@ llmdb launch ./.build/debug/llmdb-fixture quick
 }
 ```
 
-The daemon auto-spawns on first call. The binary stops on entry so the next call has a quiescent target.
+The daemon auto-spawns on first call, and is restarted automatically if it was started by a different llmdb version (e.g. still running from before an upgrade). The binary stops on entry so the next call has a quiescent target.
 
 ### 2. Set a breakpoint and run until it hits — one call
 
@@ -157,7 +157,7 @@ llmdb doctor
 { "checks" : [
     { "name" : "lldb-dap",   "ok" : true, "detail" : "/Applications/Xcode.app/.../lldb-dap" },
     { "name" : "socket-dir", "ok" : true, "detail" : "~/Library/Caches/llmdb" },
-    { "name" : "daemon",     "ok" : true, "detail" : "~/Library/Caches/llmdb/llmdbd.sock" }
+    { "name" : "daemon",     "ok" : true, "detail" : "~/Library/Caches/llmdb/llmdbd.sock (pid 4242, version 0.3.0)" }
 ]}
 ```
 
@@ -241,7 +241,7 @@ All four blocking verbs accept `--wait <seconds|none>`. Default timeouts: `conti
 
 | Command | Description | Key options |
 |---|---|---|
-| `doctor` | Verify lldb-dap, socket dir, daemon reachability. `daemon: ok+idle` on a fresh machine; only an unreachable stale socket counts as a failure. Exits 1 on any failure. | — |
+| `doctor` | Verify lldb-dap, socket dir, daemon reachability and version. `daemon: ok+idle` on a fresh machine; a stale socket or a daemon from a different llmdb version counts as a failure. Exits 1 on any failure. | — |
 | `daemon` | Run `llmdbd` (normally auto-spawned). | `--socket PATH` to override |
 | `mcp` | Start the stdio MCP server. | `--setup` prints client config snippets |
 

@@ -231,6 +231,29 @@ struct BreakListResult: Codable {
     let breakpoints: [Breakpoint]
 }
 
+/// What `version` returns. Clients restart any daemon whose `build` differs
+/// from their own `DaemonBuild.current`.
+struct DaemonInfo: Codable {
+    let version: String
+    let build: String
+}
+
+enum DaemonBuild {
+    /// Release builds are identified by version. Dev builds all say "dev", so
+    /// the binary's mtime is appended — a rebuild then counts as a new build.
+    /// Computed once; the daemon reads it at startup so a later rebuild of its
+    /// binary on disk doesn't change what it reports.
+    static let current: String = {
+        guard llmdbVersion == "dev" else {
+            return llmdbVersion
+        }
+        let mtime = Bundle.main.executablePath
+            .flatMap { try? FileManager.default.attributesOfItem(atPath: $0)[.modificationDate] as? Date }
+            .map { String(Int($0.timeIntervalSince1970)) } ?? "unknown"
+        return "dev+\(mtime)"
+    }()
+}
+
 struct StopResult: Codable {
     let ok: Bool
     /// "detached" (target left running) or "terminated" (target killed).

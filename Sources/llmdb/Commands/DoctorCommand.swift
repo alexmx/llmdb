@@ -1,5 +1,4 @@
 import ArgumentParser
-import Darwin
 import Foundation
 
 struct DoctorCommand: AsyncParsableCommand {
@@ -79,11 +78,18 @@ enum Doctor {
         return DoctorCheck(name: "socket-dir", ok: true, detail: dir)
     }
 
-    // MARK: - Daemon reachability (does NOT auto-spawn)
+    // MARK: - Daemon reachability + version (does NOT auto-spawn or restart)
 
     private static func checkDaemon() -> DoctorCheck {
         let path = Daemon.defaultSocketPath
-        if !FileManager.default.fileExists(atPath: path) {
+        let status: DaemonClient.Status
+        do {
+            status = try DaemonClient.status()
+        } catch {
+            return DoctorCheck(name: "daemon", ok: false, detail: "\(error)")
+        }
+        switch status {
+        case .idle:
             // Not a failure — just no daemon yet. The next CLI/MCP call will
             // auto-spawn it. Keeps `doctor` from false-positiving on a fresh
             // install.
@@ -92,26 +98,22 @@ enum Doctor {
                 ok: true,
                 detail: "idle (no socket at \(path)) — auto-spawns on first CLI call"
             )
-        }
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        if fd < 0 {
-            return DoctorCheck(name: "daemon", ok: false, detail: "socket() failed (errno \(errno))")
-        }
-        defer { Darwin.close(fd) }
-        do {
-            let rc = try UnixSocketIO.withSockaddr(path: path) { sptr, len in
-                Darwin.connect(fd, sptr, len)
-            }
-            if rc == 0 {
-                return DoctorCheck(name: "daemon", ok: true, detail: path)
-            }
+        case .staleSocket:
             return DoctorCheck(
                 name: "daemon",
                 ok: false,
                 detail: "stale socket at \(path) (connect refused; daemon died — rm and retry)"
             )
-        } catch {
-            return DoctorCheck(name: "daemon", ok: false, detail: "\(error)")
+        case .running(let pid, let info):
+            let pidText = pid.map { "pid \($0)" } ?? "pid ?"
+            if let info, info.build == DaemonBuild.current {
+                return DoctorCheck(name: "daemon", ok: true, detail: "\(path) (\(pidText), version \(info.version))")
+            }
+            return DoctorCheck(
+                name: "daemon",
+                ok: false,
+                detail: "\(pidText) is \(DaemonClient.describe(info)), this CLI is \(llmdbVersion) — the next llmdb call restarts it (its sessions are lost)"
+            )
         }
     }
 }

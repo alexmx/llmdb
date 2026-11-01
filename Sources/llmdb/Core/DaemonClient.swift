@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 /// CLI-side client for `llmdbd`. Connects to the Unix socket, sends
 /// newline-delimited JSON-RPC requests, returns decoded responses.
@@ -27,7 +28,16 @@ enum DaemonClient {
         try UnixSocketIO.writeAll(fd: fd, data: requestData)
 
         let responseLine = try readLine(fd: fd)
-        let envelope = try JSONDecoder().decode(RPCResponse<Result>.self, from: responseLine)
+        let envelope: RPCResponse<Result>
+        do {
+            envelope = try JSONDecoder().decode(RPCResponse<Result>.self, from: responseLine)
+        } catch is DecodingError {
+            // Usually a daemon from another llmdb version that slipped past the
+            // version check (e.g. a long-running MCP server outlived an upgrade).
+            throw LlmdbError.daemonMismatch(
+                "unexpected `\(method)` response from llmdbd — it may be a different llmdb version; run `llmdb doctor`"
+            )
+        }
         if let error = envelope.error {
             // Daemon-originated error — pass through without our own prefix.
             throw LlmdbError.remote(error)
@@ -47,13 +57,35 @@ enum DaemonClient {
 
     // MARK: - Connect / auto-spawn
 
+    /// Set once this process has confirmed the daemon matches its build (or
+    /// spawned it). Checked once per process, not per call: a long-running MCP
+    /// server and a freshly upgraded CLI would otherwise keep restarting the
+    /// daemon to match themselves, killing sessions each time.
+    private static let verified = Mutex(false)
+
     private static func connectOrSpawn() async throws -> Int32 {
         // Try to connect to an existing daemon. If the socket file is missing
         // OR it's stale (ECONNREFUSED = no listener bound) — spawn a fresh
-        // daemon and poll until the socket is up.
+        // daemon and poll until the socket is up. A daemon from a different
+        // build (e.g. still running from before an upgrade) is replaced.
         if FileManager.default.fileExists(atPath: socketPath) {
             do {
-                return try connect()
+                let fd = try connect()
+                if verified.withLock({ $0 }) {
+                    return fd
+                }
+                let matches: Bool
+                do {
+                    matches = try checkBuild(fd: fd)
+                } catch {
+                    Darwin.close(fd)
+                    throw error
+                }
+                if matches {
+                    verified.withLock { $0 = true }
+                    return fd
+                }
+                Darwin.close(fd)
             } catch LlmdbError.daemonUnreachable where errno == ECONNREFUSED {
                 // Stale socket from a dead daemon; unlink and respawn.
                 _ = Darwin.unlink(socketPath)
@@ -65,10 +97,110 @@ enum DaemonClient {
         while Date() < deadline {
             try await Task.sleep(nanoseconds: 50_000_000)
             if FileManager.default.fileExists(atPath: socketPath) {
-                do { return try connect() } catch { lastError = error }
+                do {
+                    let fd = try connect()
+                    verified.withLock { $0 = true }
+                    return fd
+                } catch {
+                    lastError = error
+                }
             }
         }
         throw lastError ?? LlmdbError.daemonUnreachable("daemon spawned but socket did not appear")
+    }
+
+    /// True if the daemon on `fd` is this build. Otherwise stops it (its
+    /// sessions go with it) so the caller can spawn a matching one.
+    private static func checkBuild(fd: Int32) throws -> Bool {
+        let info = try fetchInfo(fd: fd)
+        if info?.build == DaemonBuild.current {
+            return true
+        }
+        let pid = peerPID(fd: fd)
+        FileHandle.standardError.write(Data(
+            "llmdb: restarting llmdbd (pid \(pid.map(String.init) ?? "?")) — it is \(describe(info)), this CLI is \(llmdbVersion). Its sessions are lost.\n"
+                .utf8
+        ))
+        if let pid {
+            terminate(pid: pid)
+        }
+        return false
+    }
+
+    /// Ask the daemon on `fd` for its build. nil → it predates the `version`
+    /// method (any pre-handshake llmdb), which is always a mismatch.
+    private static func fetchInfo(fd: Int32) throws -> DaemonInfo? {
+        var request = try JSONEncoder().encode(RPCRequest(id: 0, method: "version", params: EmptyParams()))
+        request.append(0x0A)
+        try UnixSocketIO.writeAll(fd: fd, data: request)
+        let line = try readLine(fd: fd)
+        return (try? JSONDecoder().decode(RPCResponse<DaemonInfo>.self, from: line))?.result
+    }
+
+    static func describe(_ info: DaemonInfo?) -> String {
+        guard let info else {
+            return "an older llmdb (no version handshake)"
+        }
+        return info.version == llmdbVersion ? "a different build of \(info.version)" : "version \(info.version)"
+    }
+
+    /// PID of the process listening on the other end of `fd`. Works for any
+    /// daemon version, unlike asking the daemon itself.
+    private static func peerPID(fd: Int32) -> pid_t? {
+        var pid: pid_t = 0
+        var len = socklen_t(MemoryLayout<pid_t>.size)
+        guard Darwin.getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0, pid > 0, pid != getpid() else {
+            return nil
+        }
+        return pid
+    }
+
+    /// SIGTERM (the daemon unlinks its socket and exits), then SIGKILL if it
+    /// hasn't gone within 2s. Its lldb-dap children exit with it, which
+    /// releases their targets.
+    private static func terminate(pid: pid_t) {
+        func waitForExit(_ seconds: Double) -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while Date() < deadline {
+                if Darwin.kill(pid, 0) != 0, errno == ESRCH {
+                    return true
+                }
+                usleep(20000)
+            }
+            return false
+        }
+        Darwin.kill(pid, SIGTERM)
+        if waitForExit(2) {
+            return
+        }
+        Darwin.kill(pid, SIGKILL)
+        _ = waitForExit(1)
+        _ = Darwin.unlink(socketPath)
+    }
+
+    // MARK: - Status (no spawn, no restart) — for `doctor`
+
+    enum Status {
+        /// No socket file; the next call spawns a daemon.
+        case idle
+        /// Socket file exists but nothing is listening.
+        case staleSocket
+        /// `info` nil → daemon predates the version handshake.
+        case running(pid: pid_t?, info: DaemonInfo?)
+    }
+
+    static func status() throws -> Status {
+        guard FileManager.default.fileExists(atPath: socketPath) else {
+            return .idle
+        }
+        let fd: Int32
+        do {
+            fd = try connect()
+        } catch LlmdbError.daemonUnreachable where errno == ECONNREFUSED {
+            return .staleSocket
+        }
+        defer { Darwin.close(fd) }
+        return try .running(pid: peerPID(fd: fd), info: fetchInfo(fd: fd))
     }
 
     private static func connect() throws -> Int32 {

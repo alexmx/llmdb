@@ -37,6 +37,7 @@ Deps: `swift-argument-parser`, `swift-cli-mcp`, `swift-subprocess`, `toon-swift`
 ## Architecture
 
 - **`llmdbd`** — Unix-socket JSON-RPC server at `~/Library/Caches/llmdb/llmdbd.sock`. Owns sessions and their `lldb-dap` children. Auto-spawned by CLI/MCP on first call. Set `LLMDB_SOCKET_PATH=…` to give an agent its own daemon (e.g. per-MCP-server isolation).
+- **Version handshake.** Before its first request, each client process calls `version` and compares `build` with `DaemonBuild.current` (release: the version; dev: `dev+<binary mtime>`). On a mismatch, or a daemon too old to have `version`, the client stops that daemon (it finds the PID with `LOCAL_PEERPID`, then sends SIGTERM, and SIGKILL if needed) and spawns a new one. The check runs once per process so a long-running MCP server and a newer CLI don't keep restarting each other's daemon.
 - **`DAPClient`** speaks DAP (Content-Length JSON over stdio) to one `lldb-dap` per session. Event fan-out lives here: each subscriber gets its own `AsyncStream` via `client.events()` / `client.waitForEvent(...)`. Do not re-introduce a single-consumer model — the listener and per-call waiters share the stream.
 - **`SessionManager`** orchestrates the DAP handshake, tracks the most recent stop, exposes the high-level verbs.
 - **`SimulatorResolver`** wraps `xcrun simctl` for `bundle-id → host PID`.

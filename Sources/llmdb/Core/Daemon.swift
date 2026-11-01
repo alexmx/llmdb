@@ -9,7 +9,9 @@ import Foundation
 /// the order they arrive.
 ///
 /// Methods:
-///   launch        { binary: String, args: [String] }            → SessionSnapshot
+///   version       {}                                            → { version, build }
+///                 // clients restart a daemon whose build differs from theirs
+///   launch       { binary: String, args: [String] }            → SessionSnapshot
 ///   attach        { pid?: Int32, app?: String }                 → SessionSnapshot
 ///                 // exactly one of pid/app; `app` resolves a bundle ID in
 ///                 // the booted iOS Simulator to a host PID via simctl.
@@ -61,6 +63,8 @@ public final class Daemon: @unchecked Sendable {
     }
 
     public func start() throws {
+        // Pin the build ID now, before the binary on disk can be replaced.
+        _ = DaemonBuild.current
         let parent = (socketPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(
             atPath: parent, withIntermediateDirectories: true
@@ -212,6 +216,9 @@ public final class Daemon: @unchecked Sendable {
             }
 
             switch method {
+            case "version":
+                return encodeOK(id: requestID, result: DaemonInfo(version: llmdbVersion, build: DaemonBuild.current))
+
             case "launch":
                 let p = try decode(LaunchParams.self)
                 let snap = try await manager.launch(binary: p.binary, args: p.args ?? [], timeout: p.timeout)

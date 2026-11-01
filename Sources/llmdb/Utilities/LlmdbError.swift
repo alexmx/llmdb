@@ -3,6 +3,8 @@ import Foundation
 enum LlmdbError: Error, CustomStringConvertible {
     case notImplemented(String)
     case daemonUnreachable(String)
+    /// The daemon answered, but not in the shape this CLI expects.
+    case daemonMismatch(String)
     /// Error message returned by the daemon — passed through verbatim so we
     /// don't double-prefix on the client side.
     case remote(String)
@@ -16,6 +18,8 @@ enum LlmdbError: Error, CustomStringConvertible {
             "not implemented yet: \(what)"
         case .daemonUnreachable(let reason):
             "llmdbd unreachable: \(reason)"
+        case .daemonMismatch(let reason):
+            reason
         case .remote(let message):
             message
         case .sessionNotFound(let id):
