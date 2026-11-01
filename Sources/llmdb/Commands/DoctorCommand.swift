@@ -7,9 +7,6 @@ struct DoctorCommand: AsyncParsableCommand {
         abstract: "Diagnose the local llmdb environment (lldb-dap, socket dir, daemon reachability)"
     )
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let report = await Doctor.runChecks()
         try JSONOutput.print(report)
@@ -32,30 +29,10 @@ enum Doctor {
     // MARK: - lldb-dap
 
     private static func checkLldbDap() async -> DoctorCheck {
-        await Task.detached {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-            proc.arguments = ["--find", "lldb-dap"]
-            let out = Pipe()
-            proc.standardOutput = out
-            proc.standardError = Pipe()
-            do {
-                try proc.run()
-                proc.waitUntilExit()
-                let path = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if proc.terminationStatus == 0, !path.isEmpty {
-                    return DoctorCheck(name: "lldb-dap", ok: true, detail: path)
-                }
-            } catch {
-                return DoctorCheck(name: "lldb-dap", ok: false, detail: "xcrun failed: \(error)")
-            }
-            return DoctorCheck(
-                name: "lldb-dap",
-                ok: false,
-                detail: "not found — install Xcode or the Command Line Tools"
-            )
-        }.value
+        if let path = await DAPClient.findLldbDap() {
+            return DoctorCheck(name: "lldb-dap", ok: true, detail: path)
+        }
+        return DoctorCheck(name: "lldb-dap", ok: false, detail: "not found — install Xcode or the Command Line Tools")
     }
 
     // MARK: - Socket directory

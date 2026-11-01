@@ -10,7 +10,6 @@ struct Session: Codable {
     enum Target: Codable {
         case launched(binary: String, args: [String])
         case attached(pid: Int32)
-        case simulator(bundleID: String, deviceID: String, pid: Int32?)
     }
 
     enum State: String, Codable {

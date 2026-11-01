@@ -13,10 +13,10 @@ llmdb/
 │   │   ├── llmdb.swift        # @main, registers subcommands
 │   │   ├── Version.swift      # CI-generated on release; "dev" locally
 │   │   ├── Commands/          # One file per CLI verb
-│   │   ├── Core/              # DAPClient, SessionManager, Daemon, DaemonClient, SimulatorResolver, AppBundleLauncher, DAP/RPC wire types
+│   │   ├── Core/              # DAPClient, SessionManager, Daemon, DaemonClient, SimulatorResolver, AppBundleLauncher, ProcessRunner, DAP/RPC wire types
 │   │   ├── Models/            # Session, StopReason, Frame, Breakpoint, Thread, …
 │   │   ├── MCP/LlmdbTools.swift  # MCP tools, 1:1 with CLI
-│   │   └── Utilities/         # OutputFormat, JSONOutput, error types, WaitSpec
+│   │   └── Utilities/         # JSONOutput, error types, WaitSpec, SourceLocation
 │   ├── Fixture/main.swift     # llmdb-fixture — see Fixture below
 │   └── ThrowFixture/main.swift # llmdb-throw-fixture — throws a Swift error (exception-BP tests)
 └── Tests/llmdbTests/
@@ -32,13 +32,17 @@ swift run llmdb <command> [options]
 
 Requirements: macOS 15+, Swift 6.2, Xcode toolchain (for `lldb-dap`).
 
-Deps: `swift-argument-parser`, `swift-cli-mcp`, `swift-subprocess`, `toon-swift`.
+The integration tests drive the built binaries in `.build/debug` (fixtures, and `llmdb` itself for the daemon tests), so `swift build` before `swift test`. The daemon tests also use `/usr/bin/python3` (ships with the Xcode Command Line Tools) to fake a pre-handshake daemon.
+
+Deps: `swift-argument-parser`, `swift-cli-mcp`, `swift-subprocess`.
 
 ## Architecture
 
 - **`llmdbd`** — Unix-socket JSON-RPC server at `~/Library/Caches/llmdb/llmdbd.sock`. Owns sessions and their `lldb-dap` children. Auto-spawned by CLI/MCP on first call. Set `LLMDB_SOCKET_PATH=…` to give an agent its own daemon (e.g. per-MCP-server isolation).
 - **Version handshake.** Before its first request, each client process calls `version` and compares `build` with `DaemonBuild.current` (release: the version; dev: `dev+<binary mtime>`). On a mismatch, or a daemon too old to have `version`, the client stops that daemon (it finds the PID with `LOCAL_PEERPID`, then sends SIGTERM, and SIGKILL if needed) and spawns a new one. The check runs once per process so a long-running MCP server and a newer CLI don't keep restarting each other's daemon.
 - **`DAPClient`** speaks DAP (Content-Length JSON over stdio) to one `lldb-dap` per session. Event fan-out lives here: each subscriber gets its own `AsyncStream` via `client.events()` / `client.waitForEvent(...)`. Do not re-introduce a single-consumer model — the listener and per-call waiters share the stream.
+- **Only the listener writes session state from DAP events** (`SessionManager.handleEvent`). A verb notes `entry.stateVersion` before sending and calls `awaitStop(after:)`, which returns once the listener has recorded a newer stop or exit. Never apply an awaited event yourself — two writers race and roll state back.
+- **`setBreakpoints` replaces a file's whole set** (DAP semantics). Always go through `syncBreakpoints`; sending one line deletes the file's other breakpoints.
 - **`SessionManager`** orchestrates the DAP handshake, tracks the most recent stop, exposes the high-level verbs.
 - **`SimulatorResolver`** wraps `xcrun simctl` for `bundle-id → host PID`.
 - **`AppBundleLauncher`** routes `.app` paths through `NSWorkspace.openApplication` and attaches by PID instead of `exec`ing the inner binary directly. Without this, AppKit/AX-driven tools can't see the launched process.
@@ -81,9 +85,10 @@ It uses the default socket and deletes it on startup — if a Homebrew `llmdb` d
 1. `Sources/llmdb/Commands/NewCommand.swift` implementing `AsyncParsableCommand`.
 2. Register in `llmdb.swift`.
 3. Business logic in `Core/` (DAP/session-aware) or `Utilities/` (pure).
-4. Mirror in `MCP/LlmdbTools.swift` — keep descriptions tight, agent-actionable, standard `session_id` hint.
-5. Add models under `Models/`.
-6. Update `scratch/mcp-smoke.py`.
+4. Add the method to `RPC` in `Core/RPCTypes.swift` (wire name + params/result types) and register its handler in `Daemon.handlers`. CLI and MCP call it as `DaemonClient.call(RPC.x, params)`.
+5. Mirror in `MCP/LlmdbTools.swift` — keep descriptions tight, agent-actionable, standard `session_id` hint.
+6. Add models under `Models/`.
+7. Update `scratch/mcp-smoke.py`.
 
 ## Releases
 

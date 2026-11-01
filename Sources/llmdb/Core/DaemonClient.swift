@@ -13,16 +13,15 @@ enum DaemonClient {
     }
 
     /// Call a method on the daemon. Auto-spawns the daemon on first use.
-    static func call<Result: Decodable & Sendable>(
-        method: String,
-        params: some Encodable & Sendable,
-        as resultType: Result.Type
+    static func call<Params, Result>(
+        _ method: RPCMethod<Params, Result>,
+        _ params: Params
     ) async throws -> Result {
         let fd = try await connectOrSpawn()
         defer { Darwin.close(fd) }
 
         let id = Int.random(in: 1...1_000_000)
-        let request = RPCRequest(id: id, method: method, params: params)
+        let request = RPCRequest(id: id, method: method.name, params: params)
         var requestData = try JSONEncoder().encode(request)
         requestData.append(0x0A)
         try UnixSocketIO.writeAll(fd: fd, data: requestData)
@@ -35,7 +34,7 @@ enum DaemonClient {
             // Usually a daemon from another llmdb version that slipped past the
             // version check (e.g. a long-running MCP server outlived an upgrade).
             throw LlmdbError.daemonMismatch(
-                "unexpected `\(method)` response from llmdbd — it may be a different llmdb version; run `llmdb doctor`"
+                "unexpected `\(method.name)` response from llmdbd — it may be a different llmdb version; run `llmdb doctor`"
             )
         }
         if let error = envelope.error {
@@ -48,11 +47,8 @@ enum DaemonClient {
         return result
     }
 
-    static func call<Result: Decodable & Sendable>(
-        method: String,
-        as resultType: Result.Type
-    ) async throws -> Result {
-        try await call(method: method, params: EmptyParams(), as: resultType)
+    static func call<Result>(_ method: RPCMethod<EmptyParams, Result>) async throws -> Result {
+        try await call(method, EmptyParams())
     }
 
     // MARK: - Connect / auto-spawn
@@ -76,7 +72,7 @@ enum DaemonClient {
                 }
                 let matches: Bool
                 do {
-                    matches = try checkBuild(fd: fd)
+                    matches = try await checkBuild(fd: fd)
                 } catch {
                     Darwin.close(fd)
                     throw error
@@ -86,7 +82,7 @@ enum DaemonClient {
                     return fd
                 }
                 Darwin.close(fd)
-            } catch LlmdbError.daemonUnreachable where errno == ECONNREFUSED {
+            } catch is ConnectionRefused {
                 // Stale socket from a dead daemon; unlink and respawn.
                 _ = Darwin.unlink(socketPath)
             }
@@ -111,7 +107,7 @@ enum DaemonClient {
 
     /// True if the daemon on `fd` is this build. Otherwise stops it (its
     /// sessions go with it) so the caller can spawn a matching one.
-    private static func checkBuild(fd: Int32) throws -> Bool {
+    private static func checkBuild(fd: Int32) async throws -> Bool {
         let info = try fetchInfo(fd: fd)
         if info?.build == DaemonBuild.current {
             return true
@@ -122,7 +118,7 @@ enum DaemonClient {
                 .utf8
         ))
         if let pid {
-            terminate(pid: pid)
+            await terminate(pid: pid)
         }
         return false
     }
@@ -130,7 +126,7 @@ enum DaemonClient {
     /// Ask the daemon on `fd` for its build. nil → it predates the `version`
     /// method (any pre-handshake llmdb), which is always a mismatch.
     private static func fetchInfo(fd: Int32) throws -> DaemonInfo? {
-        var request = try JSONEncoder().encode(RPCRequest(id: 0, method: "version", params: EmptyParams()))
+        var request = try JSONEncoder().encode(RPCRequest(id: 0, method: RPC.version.name, params: EmptyParams()))
         request.append(0x0A)
         try UnixSocketIO.writeAll(fd: fd, data: request)
         let line = try readLine(fd: fd)
@@ -158,23 +154,23 @@ enum DaemonClient {
     /// SIGTERM (the daemon unlinks its socket and exits), then SIGKILL if it
     /// hasn't gone within 2s. Its lldb-dap children exit with it, which
     /// releases their targets.
-    private static func terminate(pid: pid_t) {
-        func waitForExit(_ seconds: Double) -> Bool {
+    private static func terminate(pid: pid_t) async {
+        func waitForExit(_ seconds: Double) async -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             while Date() < deadline {
                 if Darwin.kill(pid, 0) != 0, errno == ESRCH {
                     return true
                 }
-                usleep(20000)
+                try? await Task.sleep(for: .milliseconds(20))
             }
             return false
         }
         Darwin.kill(pid, SIGTERM)
-        if waitForExit(2) {
+        if await waitForExit(2) {
             return
         }
         Darwin.kill(pid, SIGKILL)
-        _ = waitForExit(1)
+        _ = await waitForExit(1)
         _ = Darwin.unlink(socketPath)
     }
 
@@ -196,7 +192,7 @@ enum DaemonClient {
         let fd: Int32
         do {
             fd = try connect()
-        } catch LlmdbError.daemonUnreachable where errno == ECONNREFUSED {
+        } catch is ConnectionRefused {
             return .staleSocket
         }
         defer { Darwin.close(fd) }
@@ -214,9 +210,20 @@ enum DaemonClient {
         if rc != 0 {
             let savedErrno = errno
             Darwin.close(fd)
+            if savedErrno == ECONNREFUSED {
+                throw ConnectionRefused()
+            }
             throw LlmdbError.daemonUnreachable("connect failed (errno \(savedErrno))")
         }
         return fd
+    }
+
+    /// The socket file exists but nothing is listening: a daemon died without
+    /// unlinking it. Callers catch this by type to recover.
+    private struct ConnectionRefused: Error, CustomStringConvertible {
+        var description: String {
+            LlmdbError.daemonUnreachable("connect failed (errno \(ECONNREFUSED))").description
+        }
     }
 
     private static func spawnDaemon() throws {

@@ -16,15 +16,11 @@ struct RunUntilCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let (file, line) = try parseFileLineLocation(location)
         let result = try await DaemonClient.call(
-            method: "run-until",
-            params: RunUntilParams(sessionId: session, file: file, line: line, wait: wait?.wireValue),
-            as: BreakSetResult.self
+            RPC.runUntil,
+            RunUntilParams(sessionId: session, file: file, line: line, wait: wait?.wireValue)
         )
         try JSONOutput.print(result)
     }

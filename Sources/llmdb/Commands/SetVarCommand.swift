@@ -19,14 +19,10 @@ struct SetVarCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let result = try await DaemonClient.call(
-            method: "set-var",
-            params: SetVarParams(sessionId: session, target: target, value: value, frame: frame),
-            as: SetVarResult.self
+            RPC.setVar,
+            SetVarParams(sessionId: session, target: target, value: value, frame: frame)
         )
         try JSONOutput.print(result)
     }

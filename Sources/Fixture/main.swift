@@ -73,7 +73,7 @@ print(processOptional(nil))
 
 if mode == .attach {
     let pid = getpid()
-    print("Sleeping 30s — attach now with:  llmdb attach --pid \(pid)")
+    print("Sleeping 30s — attach now with:  llmdb attach --pid \(pid)"); fflush(stdout)
     Thread.sleep(forTimeInterval: 30)
 }
 

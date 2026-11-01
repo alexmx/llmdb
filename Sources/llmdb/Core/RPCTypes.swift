@@ -20,7 +20,72 @@ struct RPCResponse<T: Decodable & Sendable>: Decodable {
     let error: String?
 }
 
+/// Server-side view of a request before its params are decoded. Lenient
+/// like a JSON-RPC server should be: a missing or non-integer `id` reads as 0.
+struct RPCRequestHeader: Decodable {
+    let id: Int
+    let method: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, method
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? container.decode(Int.self, forKey: .id)) ?? 0
+        self.method = try? container.decode(String.self, forKey: .method)
+    }
+}
+
+/// Server-side: the params of a request, decoded as the method's own type.
+/// nil when the request has no `params` (treated as `{}`).
+struct RPCParamsEnvelope<P: Decodable>: Decodable {
+    let params: P?
+}
+
 struct EmptyParams: Codable {}
+
+// MARK: - Methods
+
+/// A daemon method: its wire name plus the params it takes and the result it
+/// returns. Binding the three together means a caller can't pair a method
+/// with the wrong types, and each name is spelled exactly once.
+struct RPCMethod<Params: Codable & Sendable, Result: Codable & Sendable>: Sendable {
+    let name: String
+
+    init(_ name: String) {
+        self.name = name
+    }
+}
+
+/// Every method `llmdbd` serves.
+enum RPC {
+    /// Clients restart a daemon whose build differs from theirs.
+    static let version = RPCMethod<EmptyParams, DaemonInfo>("version")
+    static let launch = RPCMethod<LaunchParams, SessionSnapshot>("launch")
+    /// Exactly one of pid/app; `app` resolves a bundle ID in the booted iOS
+    /// Simulator to a host PID via simctl.
+    static let attach = RPCMethod<AttachParams, SessionSnapshot>("attach")
+    static let sessions = RPCMethod<EmptyParams, [Session]>("sessions")
+    static let breakSet = RPCMethod<BreakSetParams, BreakSetResult>("break.set")
+    static let breakList = RPCMethod<SessionParams, BreakListResult>("break.list")
+    static let breakDelete = RPCMethod<BreakDeleteParams, BreakListResult>("break.delete")
+    static let breakException = RPCMethod<BreakExceptionParams, BreakExceptionResult>("break.exception")
+    static let `continue` = RPCMethod<ExecParams, SessionSnapshot>("continue")
+    static let runUntil = RPCMethod<RunUntilParams, BreakSetResult>("run-until")
+    static let interrupt = RPCMethod<ExecParams, SessionSnapshot>("interrupt")
+    static let step = RPCMethod<StepParams, SessionSnapshot>("step")
+    static let wait = RPCMethod<WaitParams, SessionSnapshot>("wait")
+    static let backtrace = RPCMethod<BtParams, BacktraceResult>("bt")
+    static let locals = RPCMethod<LocalsParams, LocalsResult>("locals")
+    static let expand = RPCMethod<ExpandParams, ExpandResult>("expand")
+    static let scopes = RPCMethod<ScopesParams, ScopesResult>("scopes")
+    static let output = RPCMethod<OutputParams, OutputResult>("output")
+    static let setVar = RPCMethod<SetVarParams, SetVarResult>("set-var")
+    static let threads = RPCMethod<SessionParams, ThreadsResult>("threads")
+    static let expr = RPCMethod<ExprParams, ExprResult>("expr")
+    static let stop = RPCMethod<StopParams, StopResult>("stop")
+}
 
 /// Server-side success envelope. Generic so we can encode any verb's result.
 struct RPCResult<T: Encodable>: Encodable {
@@ -56,11 +121,11 @@ enum StepGranularity: String, Codable, EnumerableFlag {
 enum StopMode: String, Codable, EnumerableFlag {
     case detach, terminate
 
-    /// Past-tense label reported back to the caller.
-    var action: String {
+    /// What doing this to a live target is reported as.
+    var action: StopAction {
         switch self {
-        case .detach: "detached"
-        case .terminate: "terminated"
+        case .detach: .detached
+        case .terminate: .terminated
         }
     }
 
@@ -254,8 +319,17 @@ enum DaemonBuild {
     }()
 }
 
+/// What `stop` did to the target.
+enum StopAction: String, Codable {
+    /// Killed.
+    case terminated
+    /// Left running.
+    case detached
+    /// Had already ended; nothing to do.
+    case exited
+}
+
 struct StopResult: Codable {
     let ok: Bool
-    /// "detached" (target left running) or "terminated" (target killed).
-    let action: String
+    let action: StopAction
 }

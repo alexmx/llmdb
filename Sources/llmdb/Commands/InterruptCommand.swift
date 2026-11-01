@@ -13,14 +13,10 @@ struct InterruptCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID (omit when only one is active)")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let snap = try await DaemonClient.call(
-            method: "interrupt",
-            params: ExecParams(sessionId: session, wait: wait?.wireValue),
-            as: SessionSnapshot.self
+            RPC.interrupt,
+            ExecParams(sessionId: session, wait: wait?.wireValue)
         )
         try JSONOutput.print(snap)
     }

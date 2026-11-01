@@ -10,14 +10,10 @@ struct ThreadsCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let result = try await DaemonClient.call(
-            method: "threads",
-            params: SessionParams(sessionId: session),
-            as: ThreadsResult.self
+            RPC.threads,
+            SessionParams(sessionId: session)
         )
         try JSONOutput.print(result)
     }

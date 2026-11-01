@@ -10,10 +10,7 @@ enum AppBundleLauncher {
     /// Returns the `.app` bundle URL if `path` points to one (or to a binary
     /// inside one), else nil.
     static func appBundleURL(for path: String) -> URL? {
-        let absolute = (path as NSString).isAbsolutePath
-            ? path
-            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(path)
-        let url = URL(fileURLWithPath: absolute)
+        let url = URL(fileURLWithPath: absolutePath(path))
         let components = url.pathComponents
         guard let appIndex = components.firstIndex(where: { $0.hasSuffix(".app") }) else {
             return nil

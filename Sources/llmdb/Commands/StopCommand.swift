@@ -14,14 +14,10 @@ struct StopCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID (omit when only one is active)")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let result = try await DaemonClient.call(
-            method: "stop",
-            params: StopParams(sessionId: session, mode: mode),
-            as: StopResult.self
+            RPC.stop,
+            StopParams(sessionId: session, mode: mode)
         )
         try JSONOutput.print(result)
     }

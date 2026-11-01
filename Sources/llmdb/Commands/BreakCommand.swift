@@ -26,21 +26,17 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Fire on a hit-count match, e.g. `>5` or `3`")
         var hitCondition: String?
 
-        @Option(name: .long, help: "Output format")
-        var format: OutputFormat = .default
-
         func run() async throws {
             let (file, line) = try parseFileLineLocation(location)
             let result = try await DaemonClient.call(
-                method: "break.set",
-                params: BreakSetParams(
+                RPC.breakSet,
+                BreakSetParams(
                     sessionId: session,
                     file: file,
                     line: line,
                     condition: condition,
                     hitCondition: hitCondition
-                ),
-                as: BreakSetResult.self
+                )
             )
             try JSONOutput.print(result)
         }
@@ -55,14 +51,10 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Session ID")
         var session: String?
 
-        @Option(name: .long, help: "Output format")
-        var format: OutputFormat = .default
-
         func run() async throws {
             let result = try await DaemonClient.call(
-                method: "break.list",
-                params: SessionParams(sessionId: session),
-                as: BreakListResult.self
+                RPC.breakList,
+                SessionParams(sessionId: session)
             )
             try JSONOutput.print(result)
         }
@@ -80,14 +72,10 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Session ID")
         var session: String?
 
-        @Option(name: .long, help: "Output format")
-        var format: OutputFormat = .default
-
         func run() async throws {
             let result = try await DaemonClient.call(
-                method: "break.delete",
-                params: BreakDeleteParams(sessionId: session, id: id),
-                as: BreakListResult.self
+                RPC.breakDelete,
+                BreakDeleteParams(sessionId: session, id: id)
             )
             try JSONOutput.print(result)
         }
@@ -105,14 +93,10 @@ struct BreakCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Session ID")
         var session: String?
 
-        @Option(name: .long, help: "Output format")
-        var format: OutputFormat = .default
-
         func run() async throws {
             let result = try await DaemonClient.call(
-                method: "break.exception",
-                params: BreakExceptionParams(sessionId: session, filters: filters),
-                as: BreakExceptionResult.self
+                RPC.breakException,
+                BreakExceptionParams(sessionId: session, filters: filters)
             )
             try JSONOutput.print(result)
         }

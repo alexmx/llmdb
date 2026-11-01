@@ -16,14 +16,10 @@ struct StepCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let snap = try await DaemonClient.call(
-            method: "step",
-            params: StepParams(sessionId: session, granularity: granularity, wait: wait?.wireValue),
-            as: SessionSnapshot.self
+            RPC.step,
+            StepParams(sessionId: session, granularity: granularity, wait: wait?.wireValue)
         )
         try JSONOutput.print(snap)
     }

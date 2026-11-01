@@ -7,14 +7,8 @@ struct SessionsCommand: AsyncParsableCommand {
         abstract: "List active debug sessions"
     )
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
-        let sessions = try await DaemonClient.call(
-            method: "sessions",
-            as: [Session].self
-        )
+        let sessions = try await DaemonClient.call(RPC.sessions)
         try JSONOutput.print(sessions)
     }
 }

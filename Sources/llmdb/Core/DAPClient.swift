@@ -15,6 +15,9 @@ actor DAPClient {
     private let stdin: FileHandle
     private let stdoutPipe: Pipe
     private let stderrPipe: Pipe
+    /// lldb-dap's stdout, chunk by chunk, in arrival order. Finished on EOF
+    /// or `terminate()`.
+    private let stdoutChunks: AsyncStream<Data>.Continuation
 
     private var nextSeq = 0
     private var pending: [Int: CheckedContinuation<DAPResponse, Error>] = [:]
@@ -24,16 +27,27 @@ actor DAPClient {
 
     // MARK: - Lifecycle
 
-    /// Spawn `lldb-dap` and return a ready DAPClient. Resolves the executable
-    /// off the calling task (via `xcrun --find lldb-dap`) before constructing
-    /// the actor, so the blocking lookup doesn't park an actor's executor.
+    /// Spawn `lldb-dap` and return a ready DAPClient. Without an explicit
+    /// executable, uses the one `xcrun` finds, else `lldb-dap` from PATH.
     static func spawn(executable: String? = nil) async throws -> DAPClient {
         let path = if let executable {
             executable
         } else {
-            await Self.resolveExecutable()
+            await findLldbDap() ?? "lldb-dap"
         }
         return try DAPClient(executablePath: path)
+    }
+
+    /// The active toolchain's `lldb-dap` per `xcrun --find`, or nil if it
+    /// can't be found.
+    static func findLldbDap() async -> String? {
+        guard let result = try? await ProcessRunner.run("/usr/bin/xcrun", ["--find", "lldb-dap"]),
+              result.status.isSuccess
+        else {
+            return nil
+        }
+        let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
     }
 
     private init(executablePath: String) throws {
@@ -48,6 +62,8 @@ actor DAPClient {
         self.stdin = sin.fileHandleForWriting
         self.stdoutPipe = sout
         self.stderrPipe = serr
+        let (chunks, continuation) = AsyncStream<Data>.makeStream(bufferingPolicy: .unbounded)
+        self.stdoutChunks = continuation
 
         do {
             try proc.run()
@@ -55,23 +71,30 @@ actor DAPClient {
             throw DAPError.launchFailed("\(error)")
         }
 
-        // Non-blocking read loop. FileHandle invokes the handler on its own
-        // internal queue whenever data is available; we forward chunks back
-        // into the actor for parsing.
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // FileHandle calls the handler serially on its own queue; it only
+        // enqueues. A single task drains the stream so chunks are parsed in
+        // order and close always comes after the last one — a Task per chunk
+        // would let the actor run them in any order.
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
-            guard let self else { return }
             if chunk.isEmpty {
                 handle.readabilityHandler = nil
-                Task { await self.handleClose() }
+                continuation.finish()
             } else {
-                Task { await self.feed(chunk) }
+                continuation.yield(chunk)
             }
+        }
+        Task { [weak self] in
+            for await chunk in chunks {
+                await self?.feed(chunk)
+            }
+            await self?.handleClose()
         }
     }
 
     deinit {
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stdoutChunks.finish()
         if process.isRunning {
             process.terminate()
         }
@@ -84,6 +107,7 @@ actor DAPClient {
         guard !closed else { return }
         closed = true
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stdoutChunks.finish()
         if process.isRunning {
             process.terminate()
         }
@@ -114,12 +138,11 @@ actor DAPClient {
     /// and you cannot miss it.
     func events() -> AsyncStream<DAPEvent> {
         let id = UUID()
-        var captured: AsyncStream<DAPEvent>.Continuation!
-        let stream = AsyncStream<DAPEvent>(bufferingPolicy: .unbounded) { captured = $0 }
-        captured.onTermination = { @Sendable [weak self] _ in
+        let (stream, continuation) = AsyncStream<DAPEvent>.makeStream(bufferingPolicy: .unbounded)
+        continuation.onTermination = { @Sendable [weak self] _ in
             Task { await self?.removeSubscriber(id: id) }
         }
-        subscribers[id] = captured
+        subscribers[id] = continuation
         return stream
     }
 
@@ -170,12 +193,15 @@ actor DAPClient {
         guard !closed else { throw DAPError.closed }
         nextSeq += 1
         let seq = nextSeq
-        if let timeout {
+        // Cancelled as soon as this call returns, so a timer doesn't outlive
+        // the response it guards.
+        let timer = timeout.map { seconds in
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                await self?.expire(seq: seq, command: command, after: timeout)
+                guard await (try? Task.sleep(for: .seconds(seconds))) != nil else { return }
+                await self?.expire(seq: seq, command: command, after: seconds)
             }
         }
+        defer { timer?.cancel() }
 
         let body = try JSONEncoder().encode(
             DAPRequestEnvelope(seq: seq, command: command, arguments: arguments)
@@ -230,18 +256,12 @@ actor DAPClient {
                 if resp.success {
                     cont.resume(returning: resp)
                 } else {
-                    // Surface the raw body too — lldb-dap often puts the real
-                    // error in body.error.format rather than the top-level message.
-                    var msgText = resp.message ?? "request failed"
-                    if let body = resp.body,
-                       let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-                       let err = obj["error"] as? [String: Any],
-                       let fmt = err["format"] as? String {
-                        msgText = fmt
-                    }
+                    // lldb-dap often puts the real error in body.error.format
+                    // rather than the top-level message.
+                    let detail = try? resp.decodeBody(ErrorResponseBody.self).error?.format
                     cont.resume(throwing: DAPError.responseError(
                         command: resp.command,
-                        message: msgText
+                        message: detail ?? resp.message ?? "request failed"
                     ))
                 }
             }
@@ -281,28 +301,13 @@ actor DAPClient {
 
     private struct EmptyArgs: Encodable {}
 
-    private static func resolveExecutable() async -> String {
-        await Task.detached {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-            p.arguments = ["--find", "lldb-dap"]
-            let out = Pipe()
-            p.standardOutput = out
-            p.standardError = Pipe()
-            do {
-                try p.run()
-                p.waitUntilExit()
-                let data = out.fileHandleForReading.readDataToEndOfFile()
-                let path = String(decoding: data, as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !path.isEmpty {
-                    return path
-                }
-            } catch {
-                // Fall through to PATH lookup.
-            }
-            return "lldb-dap"
-        }.value
+    /// A failed response's body: `{ "error": { "format": "…" } }`.
+    private struct ErrorResponseBody: Decodable {
+        struct Message: Decodable {
+            let format: String
+        }
+
+        let error: Message?
     }
 }
 

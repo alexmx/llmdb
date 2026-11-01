@@ -16,14 +16,10 @@ struct ScopesCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let result = try await DaemonClient.call(
-            method: "scopes",
-            params: ScopesParams(sessionId: session, threadId: thread, frame: frame),
-            as: ScopesResult.self
+            RPC.scopes,
+            ScopesParams(sessionId: session, threadId: thread, frame: frame)
         )
         try JSONOutput.print(result)
     }

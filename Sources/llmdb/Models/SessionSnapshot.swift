@@ -6,5 +6,4 @@ struct SessionSnapshot: Codable {
     let sessionId: String
     let state: Session.State
     let stopReason: StopReason?
-    let topFrame: Frame?
 }

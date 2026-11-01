@@ -13,14 +13,10 @@ struct ContinueCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let snap = try await DaemonClient.call(
-            method: "continue",
-            params: ExecParams(sessionId: session, wait: wait?.wireValue),
-            as: SessionSnapshot.self
+            RPC.continue,
+            ExecParams(sessionId: session, wait: wait?.wireValue)
         )
         try JSONOutput.print(snap)
     }

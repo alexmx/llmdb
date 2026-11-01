@@ -16,14 +16,10 @@ struct ExprCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let result = try await DaemonClient.call(
-            method: "expr",
-            params: ExprParams(sessionId: session, expression: expression, frame: frame),
-            as: ExprResult.self
+            RPC.expr,
+            ExprParams(sessionId: session, expression: expression, frame: frame)
         )
         try JSONOutput.print(result)
     }

@@ -20,7 +20,7 @@ struct MCPServerCommand: AsyncParsableCommand {
         let server = MCPServer(
             name: "llmdb",
             version: llmdbVersion,
-            description: "Drive lldb-dap for macOS and iOS Simulator debugging. Start with llmdb_launch or llmdb_attach to open a session, then llmdb_break_set + llmdb_continue to run until a hit; inspect with llmdb_bt and llmdb_locals. All verbs return JSON with session_id, state, and stop_reason so you always know where the target is.",
+            description: "Drive lldb-dap for macOS and iOS Simulator debugging. Start with llmdb_launch or llmdb_attach to open a session, then llmdb_break_set + llmdb_continue to run until a hit; inspect with llmdb_bt and llmdb_locals. All verbs return JSON with sessionId, state, and stopReason so you always know where the target is.",
             tools: LlmdbTools.all
         )
         await server.run()

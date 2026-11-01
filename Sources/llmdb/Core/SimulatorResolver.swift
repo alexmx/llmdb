@@ -1,4 +1,5 @@
 import Foundation
+import Subprocess
 
 /// Resolves a bundle identifier of an app running in the booted iOS Simulator
 /// to its host-side PID, so the existing attach-by-PID path can take it from
@@ -22,49 +23,53 @@ enum SimulatorResolver {
     // MARK: - Pipeline steps (each independently testable)
 
     static func bootedDeviceUDID() async throws -> String {
-        let json = try await runStdout(["/usr/bin/xcrun", "simctl", "list", "devices", "booted", "-j"])
-        return try parseBootedUDID(json: json)
+        let result = try await run("/usr/bin/xcrun", ["simctl", "list", "devices", "booted", "-j"])
+        guard result.status.isSuccess else {
+            throw failure("xcrun simctl list", result.status)
+        }
+        return try parseBootedUDID(json: Data(result.stdout.utf8))
+    }
+
+    /// `simctl list devices -j`: runtime identifier → devices.
+    private struct DeviceList: Decodable {
+        struct Device: Decodable {
+            let udid: String
+            let state: String
+        }
+
+        let devices: [String: [Device]]
     }
 
     /// Pure: pull the first booted device's UDID from a `simctl list -j` blob.
     static func parseBootedUDID(json: Data) throws -> String {
-        guard let obj = try JSONSerialization.jsonObject(with: json) as? [String: Any],
-              let devices = obj["devices"] as? [String: Any]
-        else {
-            throw LlmdbError.daemonUnreachable("simctl list returned unexpected JSON shape")
+        guard let list = try? JSONDecoder().decode(DeviceList.self, from: json) else {
+            throw LlmdbError.simulator("simctl list returned unexpected JSON shape")
         }
-        for (_, value) in devices {
-            guard let list = value as? [[String: Any]] else { continue }
-            if let first = list.first(where: { ($0["state"] as? String) == "Booted" }),
-               let udid = first["udid"] as? String {
-                return udid
+        for devices in list.devices.values {
+            if let booted = devices.first(where: { $0.state == "Booted" }) {
+                return booted.udid
             }
         }
-        throw LlmdbError.daemonUnreachable(
+        throw LlmdbError.simulator(
             "no booted iOS Simulator — boot one with `xcrun simctl boot <udid>` or via Xcode"
         )
     }
 
     static func appBundlePath(udid: String, bundleID: String) async throws -> String {
-        do {
-            let data = try await runStdout([
-                "/usr/bin/xcrun", "simctl", "get_app_container", udid, bundleID, "app"
-            ])
-            let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if path.isEmpty {
-                throw LlmdbError.daemonUnreachable("`\(bundleID)` not installed in simulator \(udid)")
-            }
-            return path
-        } catch let LlmdbError.daemonUnreachable(msg) where msg.contains("exited") {
-            throw LlmdbError.daemonUnreachable("`\(bundleID)` not installed in simulator \(udid)")
+        let result = try await run("/usr/bin/xcrun", ["simctl", "get_app_container", udid, bundleID, "app"])
+        let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        // simctl exits non-zero when the app isn't installed.
+        guard result.status.isSuccess, !path.isEmpty else {
+            throw LlmdbError.simulator("`\(bundleID)` not installed in simulator \(udid)")
         }
+        return path
     }
 
     /// Pure: read `CFBundleExecutable` from an .app bundle's Info.plist.
     static func readBundleExecutable(appBundlePath: String) throws -> String {
         let plistPath = "\(appBundlePath)/Info.plist"
         guard let data = FileManager.default.contents(atPath: plistPath) else {
-            throw LlmdbError.daemonUnreachable("could not read \(plistPath)")
+            throw LlmdbError.simulator("could not read \(plistPath)")
         }
         return try parseBundleExecutable(plist: data, path: plistPath)
     }
@@ -73,7 +78,7 @@ enum SimulatorResolver {
     static func parseBundleExecutable(plist: Data, path: String = "Info.plist") throws -> String {
         let obj = try PropertyListSerialization.propertyList(from: plist, format: nil)
         guard let dict = obj as? [String: Any], let exe = dict["CFBundleExecutable"] as? String else {
-            throw LlmdbError.daemonUnreachable("CFBundleExecutable not found in \(path)")
+            throw LlmdbError.simulator("CFBundleExecutable not found in \(path)")
         }
         return exe
     }
@@ -81,50 +86,36 @@ enum SimulatorResolver {
     /// Find the host PID for a process whose command line contains both the
     /// simulator UDID (Simulator app paths embed it) and the app binary name.
     static func pgrepHostPID(udid: String, binaryName: String) async throws -> Int32 {
-        do {
-            let data = try await runStdout(["/usr/bin/pgrep", "-f", "\(udid).*\(binaryName)"])
-            let str = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            for line in str.split(separator: "\n") {
-                if let pid = Int32(line) {
-                    return pid
-                }
+        let result = try await run("/usr/bin/pgrep", ["-f", "\(udid).*\(binaryName)"])
+        switch result.status {
+        case .exited(0):
+            if let pid = result.stdout.split(separator: "\n").lazy.compactMap({ Int32($0) }).first {
+                return pid
             }
-            throw LlmdbError.daemonUnreachable("`\(binaryName)` not running in simulator \(udid)")
-        } catch let LlmdbError.daemonUnreachable(msg) where msg.contains("exited 1") {
-            // pgrep exits 1 when no match.
-            throw LlmdbError.daemonUnreachable("`\(binaryName)` not running in simulator \(udid)")
+        case .exited(1):
+            break // pgrep: no match
+        default:
+            throw failure("pgrep", result.status)
+        }
+        throw LlmdbError.simulator("`\(binaryName)` not running in simulator \(udid)")
+    }
+
+    // MARK: - Subprocess helpers
+
+    private static func run(_ executable: String, _ arguments: [String]) async throws -> ProcessRunner.Output {
+        do {
+            return try await ProcessRunner.run(executable, arguments)
+        } catch {
+            throw LlmdbError.simulator("\(executable) failed to spawn: \(error)")
         }
     }
 
-    // MARK: - Subprocess helper
-
-    /// Run a command and return its stdout. Throws on non-zero exit.
-    /// Detached so the blocking `Process` doesn't park an actor's executor.
-    ///
-    /// Note: `standardError` is wired to a `Pipe()` but never drained. If a
-    /// callee ever started writing more than ~64 KiB to stderr it could block
-    /// on the full pipe. All current callees (`xcrun simctl`, `pgrep`) are
-    /// nearly silent on stderr, so we don't pay the cost of a second read loop.
-    /// If we add a chattier callee, drain stderr alongside stdout.
-    private static func runStdout(_ command: [String]) async throws -> Data {
-        try await Task.detached {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: command[0])
-            proc.arguments = Array(command.dropFirst())
-            let out = Pipe()
-            proc.standardOutput = out
-            proc.standardError = Pipe()
-            do {
-                try proc.run()
-            } catch {
-                throw LlmdbError.daemonUnreachable("\(command[0]) failed to spawn: \(error)")
-            }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            if proc.terminationStatus != 0 {
-                throw LlmdbError.daemonUnreachable("\(command[0]) exited \(proc.terminationStatus)")
-            }
-            return data
-        }.value
+    private static func failure(_ command: String, _ status: TerminationStatus) -> LlmdbError {
+        switch status {
+        case .exited(let code):
+            .simulator("\(command) exited \(code)")
+        case .signaled(let signal):
+            .simulator("\(command) killed by signal \(signal)")
+        }
     }
 }

@@ -81,7 +81,7 @@ struct SessionManagerIntegrationTests {
 
         // 10. stop — launched targets are terminated by default
         let action = try await manager.stop(sessionId: sessionID)
-        #expect(action == "terminated")
+        #expect(action == .terminated)
         #expect(await manager.list().isEmpty)
     }
 
@@ -336,6 +336,44 @@ struct SessionManagerIntegrationTests {
     }
 
     @Test
+    func breakpointsInTheSameFileAccumulate() async throws {
+        // DAP's setBreakpoints replaces a file's whole set; setting a second
+        // breakpoint used to silently delete the first.
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["quick"])
+        let (_, bp1) = try await manager.setBreakpoint(sessionId: launch.sessionId, file: paths.fixtureSource, line: 35)
+        let (_, bp2) = try await manager.setBreakpoint(sessionId: launch.sessionId, file: paths.fixtureSource, line: 42)
+        #expect(try await manager.listBreakpoints(sessionId: launch.sessionId).map(\.id) == [bp1.id, bp2.id])
+
+        // compute() (line 35) runs before fibonacci() (line 42).
+        let first = try await manager.continueExecution(sessionId: launch.sessionId)
+        #expect(first.stopReason?.hitBreakpointIDs == [bp1.id])
+        let second = try await manager.continueExecution(sessionId: launch.sessionId)
+        #expect(second.stopReason?.hitBreakpointIDs == [bp2.id])
+        try await manager.stop(sessionId: launch.sessionId)
+    }
+
+    @Test
+    func inspectingARunningSessionSaysItIsRunning() async throws {
+        let paths = try fixturePaths()
+        let manager = SessionManager()
+        // `attach` mode sleeps 30s, so the target stays running after continue.
+        let launch = try await manager.launch(binary: paths.fixtureBinary, args: ["attach"])
+        let running = try await manager.continueExecution(sessionId: launch.sessionId, wait: 0)
+        #expect(running.state == .running)
+
+        // Used to report "invalid value for --frame: 0", since the thread from
+        // the entry stop was still remembered.
+        await #expect {
+            _ = try await manager.locals(sessionId: launch.sessionId)
+        } throws: { error in
+            "\(error)" == "session is running; interrupt it or wait for a stop first"
+        }
+        _ = try await manager.stop(sessionId: launch.sessionId)
+    }
+
+    @Test
     func attachAndInterrupt() async throws {
         let paths = try fixturePaths()
 
@@ -344,19 +382,19 @@ struct SessionManagerIntegrationTests {
         // lldb-dap looks it up via task_for_pid.
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-        proc.arguments = ["-c", "\(paths.fixtureBinary) attach > /dev/null 2>&1"]
+        proc.arguments = ["-c", "\(paths.fixtureBinary) attach 2>/dev/null"]
+        let out = Pipe()
+        proc.standardOutput = out
         try proc.run()
         defer {
             if proc.isRunning {
                 proc.terminate()
             }
         }
-        // Give the fixture ~200ms to enter its sleep loop.
-        try await Task.sleep(nanoseconds: 250_000_000)
-
-        // The shell is the direct child; the fixture is its grandchild.
-        // Find the fixture PID by looking up the shell's child.
-        let pid = try findChildPID(of: proc.processIdentifier, name: "llmdb-fixture")
+        // The fixture prints its PID right before it sleeps. Attach only once
+        // it's there: the ObjC check below needs the top frame inside the
+        // sleep, which has no debug info.
+        let pid = try await readAttachPID(from: out.fileHandleForReading)
 
         let manager = SessionManager()
         let attachSnap = try await manager.attach(pid: pid)
@@ -383,7 +421,7 @@ struct SessionManagerIntegrationTests {
         // sleep loop; covered separately in the launch test's step path).
         // Attached targets are detached by default and keep running.
         let action = try await manager.stop(sessionId: attachSnap.sessionId)
-        #expect(action == "detached")
+        #expect(action == .detached)
         #expect(await manager.list().isEmpty)
         #expect(kill(pid, 0) == 0, "detached target should still be alive")
     }
@@ -406,21 +444,26 @@ struct SessionManagerIntegrationTests {
     }
 
     /// Use `pgrep -P <parent>` to find a child PID by binary name.
-    private func findChildPID(of parent: Int32, name: String) throws -> Int32 {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-P", "\(parent)", name]
-        let out = Pipe()
-        proc.standardOutput = out
-        proc.standardError = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        let str = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let pid = Int32(str.split(separator: "\n").first ?? "") else {
-            throw Skip("could not find child PID for \(name) under parent \(parent)")
+    /// The PID from the fixture's "attach now with: llmdb attach --pid N"
+    /// line, waiting up to 10s for it.
+    private func readAttachPID(from handle: FileHandle) async throws -> Int32 {
+        try await withThrowingTaskGroup(of: Int32.self) { group in
+            group.addTask {
+                for try await line in handle.bytes.lines {
+                    if let range = line.range(of: "--pid "), let pid = Int32(line[range.upperBound...]) {
+                        return pid
+                    }
+                }
+                throw Skip("fixture exited before printing its PID")
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(10))
+                throw Skip("fixture didn't print its PID within 10s")
+            }
+            let pid = try await group.next()!
+            group.cancelAll()
+            return pid
         }
-        return pid
     }
 
     private func fixturePaths() throws -> (fixtureBinary: String, fixtureSource: String) {

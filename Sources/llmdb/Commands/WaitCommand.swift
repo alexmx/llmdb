@@ -13,14 +13,10 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Session ID")
     var session: String?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
         let snap = try await DaemonClient.call(
-            method: "wait",
-            params: WaitParams(sessionId: session, timeout: timeout),
-            as: SessionSnapshot.self
+            RPC.wait,
+            WaitParams(sessionId: session, timeout: timeout)
         )
         try JSONOutput.print(snap)
     }

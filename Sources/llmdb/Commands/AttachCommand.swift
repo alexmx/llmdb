@@ -19,9 +19,6 @@ struct AttachCommand: AsyncParsableCommand {
     )
     var timeout: Double?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func validate() throws {
         switch (pid, app) {
         case (nil, nil):
@@ -35,9 +32,8 @@ struct AttachCommand: AsyncParsableCommand {
 
     func run() async throws {
         let snap = try await DaemonClient.call(
-            method: "attach",
-            params: AttachParams(pid: pid, app: app, timeout: timeout),
-            as: SessionSnapshot.self
+            RPC.attach,
+            AttachParams(pid: pid, app: app, timeout: timeout)
         )
         try JSONOutput.print(snap)
     }

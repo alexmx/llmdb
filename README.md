@@ -192,7 +192,7 @@ llmdb threads
 
 ## Command reference
 
-All commands return JSON by default (`--format json`). Pass `--session <id>` when more than one session is active.
+All commands return JSON. Pass `--session <id>` when more than one session is active.
 
 ### Lifecycle
 
@@ -207,7 +207,7 @@ All commands return JSON by default (`--format json`). Pass `--session <id>` whe
 
 | Command | Description | Key options |
 |---|---|---|
-| `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot | `--condition <expr>`, `--hit-condition <expr>` |
+| `break set <file>:<line>` | Set a source breakpoint; returns the verified BP and a session snapshot. `<file>` can be absolute, relative, or a bare name (`main.swift`) — lldb matches it by path suffix | `--condition <expr>`, `--hit-condition <expr>` |
 | `break list` | List breakpoints in the session | — |
 | `break delete <id>` | Remove a breakpoint by id; returns the survivors | — |
 | `break exception [filters…]` | Stop on thrown exceptions; pass adapter filter ids (e.g. `swift_throw`), or none to clear and list available | — |

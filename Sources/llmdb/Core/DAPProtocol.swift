@@ -112,9 +112,6 @@ struct ThreadIdArgs: Encodable {
     let threadId: Int
 }
 
-/// Alias for readability at call sites. (Same shape.)
-typealias ContinueArgs = ThreadIdArgs
-
 struct StoppedEventBody: Decodable {
     let reason: String
     let threadId: Int?

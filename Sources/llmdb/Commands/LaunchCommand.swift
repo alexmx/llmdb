@@ -19,17 +19,10 @@ struct LaunchCommand: AsyncParsableCommand {
     )
     var timeout: Double?
 
-    @Option(name: .long, help: "Output format")
-    var format: OutputFormat = .default
-
     func run() async throws {
-        let resolved = (binary as NSString).isAbsolutePath
-            ? binary
-            : (FileManager.default.currentDirectoryPath as NSString).appendingPathComponent(binary)
         let snap = try await DaemonClient.call(
-            method: "launch",
-            params: LaunchParams(binary: resolved, args: arguments, timeout: timeout),
-            as: SessionSnapshot.self
+            RPC.launch,
+            LaunchParams(binary: absolutePath(binary), args: arguments, timeout: timeout)
         )
         try JSONOutput.print(snap)
     }

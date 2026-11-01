@@ -8,32 +8,8 @@ import Foundation
 /// accepted connection; a client may pipeline many requests, each handled in
 /// the order they arrive.
 ///
-/// Methods:
-///   version       {}                                            → { version, build }
-///                 // clients restart a daemon whose build differs from theirs
-///   launch       { binary: String, args: [String] }            → SessionSnapshot
-///   attach        { pid?: Int32, app?: String }                 → SessionSnapshot
-///                 // exactly one of pid/app; `app` resolves a bundle ID in
-///                 // the booted iOS Simulator to a host PID via simctl.
-///   sessions      {}                                            → [Session]
-///   break.set     { sessionId?, file, line, condition?, hitCondition? } → { snapshot, breakpoint }
-///   break.list    { sessionId? }                                → { breakpoints }
-///   break.delete  { sessionId?, id }                            → { breakpoints }
-///   break.exception { sessionId?, filters }                     → { available, enabled }
-///   continue      { sessionId?, wait? }                         → SessionSnapshot
-///   run-until     { sessionId?, file, line, wait? }             → { snapshot, breakpoint }
-///   interrupt     { sessionId?, wait? }                         → SessionSnapshot
-///   step          { sessionId?, granularity, wait? }            → SessionSnapshot
-///   wait          { sessionId?, timeout? }                      → SessionSnapshot
-///   bt            { sessionId?, depth? }                        → { frames }
-///   locals        { sessionId?, frame? }                        → { locals }
-///   expand        { sessionId?, variablesReference }            → { children }
-///   scopes        { sessionId?, threadId?, frame? }             → { scopes }
-///   output        { sessionId?, clear? }                        → { output }
-///   set-var       { sessionId?, target, value, frame? }          → { variable }
-///   threads       { sessionId? }                                → { threads }
-///   expr          { sessionId?, expression, frame? }            → { value, type, variablesReference }
-///   stop          { sessionId? }                                → { ok: true }
+/// Methods, with their params and result types, are listed in `RPC`
+/// (RPCTypes.swift).
 public final class Daemon: @unchecked Sendable {
     /// Where the daemon binds and where clients connect. Default is
     /// `~/Library/Caches/llmdb/llmdbd.sock`; override via the
@@ -52,7 +28,7 @@ public final class Daemon: @unchecked Sendable {
     }
 
     private let socketPath: String
-    private let manager = SessionManager()
+    private let handlers = Daemon.handlers(manager: SessionManager())
     private var listenFD: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private let acceptQueue = DispatchQueue(label: "llmdbd-accept")
@@ -154,12 +130,12 @@ public final class Daemon: @unchecked Sendable {
             let flags = Darwin.fcntl(clientFD, F_GETFL, 0)
             _ = Darwin.fcntl(clientFD, F_SETFL, flags & ~O_NONBLOCK)
 
-            let mgr = manager
-            Task { await Self.handleClient(fd: clientFD, manager: mgr) }
+            let handlers = handlers
+            Task { await Self.handleClient(fd: clientFD, handlers: handlers) }
         }
     }
 
-    private static func handleClient(fd: Int32, manager: SessionManager) async {
+    private static func handleClient(fd: Int32, handlers: [String: Handler]) async {
         defer { Darwin.close(fd) }
         var buffer = Data()
         var readBuf = [UInt8](repeating: 0, count: 4096)
@@ -188,7 +164,7 @@ public final class Daemon: @unchecked Sendable {
                     continue
                 }
 
-                let response = await dispatch(messageBytes: Data(line), manager: manager)
+                let response = await dispatch(Data(line), handlers: handlers)
                 var bytes = response
                 bytes.append(0x0A)
                 // A write failure here means the client went away; nothing to do.
@@ -199,43 +175,44 @@ public final class Daemon: @unchecked Sendable {
 
     // MARK: - Dispatch
 
-    private static func dispatch(messageBytes: Data, manager: SessionManager) async -> Data {
-        var requestID = 0
+    /// Decodes one request line's params, runs the method, and encodes the
+    /// whole response envelope.
+    private typealias Handler = @Sendable (_ id: Int, _ request: Data) async throws -> Data
+
+    private static func dispatch(_ request: Data, handlers: [String: Handler]) async -> Data {
+        guard let header = try? JSONDecoder().decode(RPCRequestHeader.self, from: request) else {
+            return encodeError(id: 0, message: "expected JSON object")
+        }
+        guard let method = header.method else {
+            return encodeError(id: header.id, message: "missing `method`")
+        }
+        guard let handler = handlers[method] else {
+            return encodeError(id: header.id, message: "unknown method: \(method)")
+        }
         do {
-            guard let obj = try JSONSerialization.jsonObject(with: messageBytes) as? [String: Any] else {
-                return encodeError(id: 0, message: "expected JSON object")
-            }
-            requestID = obj["id"] as? Int ?? 0
-            guard let method = obj["method"] as? String else {
-                return encodeError(id: requestID, message: "missing `method`")
-            }
-            let paramsObj = obj["params"] as? [String: Any] ?? [:]
-            let paramsData = try JSONSerialization.data(withJSONObject: paramsObj)
-            func decode<P: Decodable>(_ type: P.Type) throws -> P {
-                try JSONDecoder().decode(type, from: paramsData)
-            }
+            return try await handler(header.id, request)
+        } catch {
+            return encodeError(id: header.id, message: "\(error)")
+        }
+    }
 
-            switch method {
-            case "version":
-                return encodeOK(id: requestID, result: DaemonInfo(version: llmdbVersion, build: DaemonBuild.current))
-
-            case "launch":
-                let p = try decode(LaunchParams.self)
-                let snap = try await manager.launch(binary: p.binary, args: p.args ?? [], timeout: p.timeout)
-                return encodeOK(id: requestID, result: snap)
-
-            case "attach":
-                let p = try decode(AttachParams.self)
-                let pid = try await resolveAttachPID(p)
-                let snap = try await manager.attach(pid: pid, timeout: p.timeout)
-                return encodeOK(id: requestID, result: snap)
-
-            case "sessions":
-                let list = await manager.list()
-                return encodeOK(id: requestID, result: list)
-
-            case "break.set":
-                let p = try decode(BreakSetParams.self)
+    /// One handler per `RPC` method. Building the table traps on a duplicate
+    /// name, so a copy-pasted registration fails on the first daemon start.
+    private static func handlers(manager: SessionManager) -> [String: Handler] {
+        Dictionary(uniqueKeysWithValues: [
+            register(RPC.version) { _ in
+                DaemonInfo(version: llmdbVersion, build: DaemonBuild.current)
+            },
+            register(RPC.launch) { p in
+                try await manager.launch(binary: p.binary, args: p.args ?? [], timeout: p.timeout)
+            },
+            register(RPC.attach) { p in
+                try await manager.attach(pid: resolveAttachPID(p), timeout: p.timeout)
+            },
+            register(RPC.sessions) { _ in
+                await manager.list()
+            },
+            register(RPC.breakSet) { p in
                 let (snap, bp) = try await manager.setBreakpoint(
                     sessionId: p.sessionId,
                     file: p.file,
@@ -243,125 +220,94 @@ public final class Daemon: @unchecked Sendable {
                     condition: p.condition,
                     hitCondition: p.hitCondition
                 )
-                return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
-
-            case "break.list":
-                let p = try decode(SessionParams.self)
-                let bps = try await manager.listBreakpoints(sessionId: p.sessionId)
-                return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
-
-            case "break.delete":
-                let p = try decode(BreakDeleteParams.self)
-                let bps = try await manager.deleteBreakpoint(sessionId: p.sessionId, id: p.id)
-                return encodeOK(id: requestID, result: BreakListResult(breakpoints: bps))
-
-            case "break.exception":
-                let p = try decode(BreakExceptionParams.self)
+                return BreakSetResult(snapshot: snap, breakpoint: bp)
+            },
+            register(RPC.breakList) { p in
+                try await BreakListResult(breakpoints: manager.listBreakpoints(sessionId: p.sessionId))
+            },
+            register(RPC.breakDelete) { p in
+                try await BreakListResult(breakpoints: manager.deleteBreakpoint(sessionId: p.sessionId, id: p.id))
+            },
+            register(RPC.breakException) { p in
                 let (available, enabled) = try await manager.setExceptionBreakpoints(
                     sessionId: p.sessionId, filters: p.filters
                 )
-                return encodeOK(
-                    id: requestID,
-                    result: BreakExceptionResult(available: available, enabled: enabled)
-                )
-
-            case "continue":
-                let p = try decode(ExecParams.self)
-                let snap = try await manager.continueExecution(sessionId: p.sessionId, wait: p.wait)
-                return encodeOK(id: requestID, result: snap)
-
-            case "run-until":
-                let p = try decode(RunUntilParams.self)
+                return BreakExceptionResult(available: available, enabled: enabled)
+            },
+            register(RPC.continue) { p in
+                try await manager.continueExecution(sessionId: p.sessionId, wait: p.wait)
+            },
+            register(RPC.runUntil) { p in
                 let (snap, bp) = try await manager.runUntil(
                     sessionId: p.sessionId, file: p.file, line: p.line, wait: p.wait
                 )
-                return encodeOK(id: requestID, result: BreakSetResult(snapshot: snap, breakpoint: bp))
-
-            case "interrupt":
-                let p = try decode(ExecParams.self)
-                let snap = try await manager.interrupt(sessionId: p.sessionId, wait: p.wait)
-                return encodeOK(id: requestID, result: snap)
-
-            case "step":
-                let p = try decode(StepParams.self)
-                let snap = try await manager.step(
-                    sessionId: p.sessionId, granularity: p.granularity, wait: p.wait
+                return BreakSetResult(snapshot: snap, breakpoint: bp)
+            },
+            register(RPC.interrupt) { p in
+                try await manager.interrupt(sessionId: p.sessionId, wait: p.wait)
+            },
+            register(RPC.step) { p in
+                try await manager.step(sessionId: p.sessionId, granularity: p.granularity, wait: p.wait)
+            },
+            register(RPC.wait) { p in
+                try await manager.wait(sessionId: p.sessionId, timeout: p.timeout)
+            },
+            register(RPC.backtrace) { p in
+                try await BacktraceResult(
+                    frames: manager.backtrace(sessionId: p.sessionId, threadId: p.threadId, depth: p.depth)
                 )
-                return encodeOK(id: requestID, result: snap)
-
-            case "wait":
-                let p = try decode(WaitParams.self)
-                let snap = try await manager.wait(sessionId: p.sessionId, timeout: p.timeout)
-                return encodeOK(id: requestID, result: snap)
-
-            case "bt":
-                let p = try decode(BtParams.self)
-                let frames = try await manager.backtrace(
-                    sessionId: p.sessionId, threadId: p.threadId, depth: p.depth
+            },
+            register(RPC.locals) { p in
+                try await LocalsResult(
+                    locals: manager.locals(sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0)
                 )
-                return encodeOK(id: requestID, result: BacktraceResult(frames: frames))
-
-            case "locals":
-                let p = try decode(LocalsParams.self)
-                let locals = try await manager.locals(
-                    sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0
+            },
+            register(RPC.expand) { p in
+                try await ExpandResult(
+                    children: manager.expand(sessionId: p.sessionId, variablesReference: p.variablesReference)
                 )
-                return encodeOK(id: requestID, result: LocalsResult(locals: locals))
-
-            case "expand":
-                let p = try decode(ExpandParams.self)
-                let children = try await manager.expand(
-                    sessionId: p.sessionId, variablesReference: p.variablesReference
+            },
+            register(RPC.scopes) { p in
+                try await ScopesResult(
+                    scopes: manager.scopes(sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0)
                 )
-                return encodeOK(id: requestID, result: ExpandResult(children: children))
-
-            case "scopes":
-                let p = try decode(ScopesParams.self)
-                let scopes = try await manager.scopes(
-                    sessionId: p.sessionId, threadId: p.threadId, frameIndex: p.frame ?? 0
-                )
-                return encodeOK(id: requestID, result: ScopesResult(scopes: scopes))
-
-            case "output":
-                let p = try decode(OutputParams.self)
-                let chunks = try await manager.output(sessionId: p.sessionId, clear: p.clear ?? false)
-                return encodeOK(id: requestID, result: OutputResult(output: chunks))
-
-            case "set-var":
-                let p = try decode(SetVarParams.self)
-                let variable = try await manager.setVariable(
+            },
+            register(RPC.output) { p in
+                try await OutputResult(output: manager.output(sessionId: p.sessionId, clear: p.clear ?? false))
+            },
+            register(RPC.setVar) { p in
+                try await SetVarResult(variable: manager.setVariable(
                     sessionId: p.sessionId,
                     target: p.target,
                     value: p.value,
                     frameIndex: p.frame ?? 0
-                )
-                return encodeOK(id: requestID, result: SetVarResult(variable: variable))
-
-            case "threads":
-                let p = try decode(SessionParams.self)
-                let ts = try await manager.threads(sessionId: p.sessionId)
-                return encodeOK(id: requestID, result: ThreadsResult(threads: ts))
-
-            case "expr":
-                let p = try decode(ExprParams.self)
+                ))
+            },
+            register(RPC.threads) { p in
+                try await ThreadsResult(threads: manager.threads(sessionId: p.sessionId))
+            },
+            register(RPC.expr) { p in
                 let r = try await manager.evaluate(
                     sessionId: p.sessionId, expression: p.expression, frameIndex: p.frame ?? 0
                 )
-                return encodeOK(id: requestID, result: ExprResult(
-                    value: r.value, type: r.type, variablesReference: r.variablesReference
-                ))
-
-            case "stop":
-                let p = try decode(StopParams.self)
-                let action = try await manager.stop(sessionId: p.sessionId, mode: p.mode)
-                return encodeOK(id: requestID, result: StopResult(ok: true, action: action))
-
-            default:
-                return encodeError(id: requestID, message: "unknown method: \(method)")
+                return ExprResult(value: r.value, type: r.type, variablesReference: r.variablesReference)
+            },
+            register(RPC.stop) { p in
+                try await StopResult(ok: true, action: manager.stop(sessionId: p.sessionId, mode: p.mode))
             }
-        } catch {
-            return encodeError(id: requestID, message: "\(error)")
-        }
+        ])
+    }
+
+    /// Pair a method's name with a handler typed by its params and result.
+    private static func register<P, R>(
+        _ method: RPCMethod<P, R>,
+        _ body: @escaping @Sendable (P) async throws -> R
+    ) -> (String, Handler) {
+        (method.name, { id, request in
+            let params = try JSONDecoder().decode(RPCParamsEnvelope<P>.self, from: request).params
+                ?? JSONDecoder().decode(P.self, from: Data("{}".utf8))
+            return try await encodeOK(id: id, result: body(params))
+        })
     }
 
     /// Resolve `AttachParams` to a concrete host PID. Enforces the

@@ -16,13 +16,13 @@ actor SessionManager {
         self.dapExecutable = dapExecutable
     }
 
-    private final class SessionEntry: @unchecked Sendable {
+    private final class SessionEntry {
         let id: String
         let client: DAPClient
         var info: Session
         var stoppedThreadId: Int?
         var listener: Task<Void, Never>?
-        var breakpoints: [Int: Breakpoint] = [:]
+        var breakpoints: [Int: TrackedBreakpoint] = [:]
         // Program output captured from DAP `output` events, oldest first.
         // Trimmed from the front once it exceeds `maxOutputChars`.
         var output: [OutputChunk] = []
@@ -31,13 +31,17 @@ actor SessionManager {
         // and the subset currently enabled.
         var exceptionFilters: [ExceptionFilter] = []
         var enabledExceptionFilters: [String] = []
-        // Reason to report for a SIGSTOP we caused ourselves: "entry"/"attach"
-        // for the launch/attach pause, "pause" for interrupt. lldb-dap reports
-        // these as "exception", which reads like a crash.
-        var expectedStopReason: String?
+        // The pause we just requested, if any — reported as its reason instead
+        // of lldb-dap's "exception", which reads like a crash.
+        var expectedStopReason: OwnPause?
         // Set once we've tried importing Foundation/UIKit/AppKit for ObjC
         // expressions, so a session pays for the import at most once.
         var triedObjCImports = false
+        // Only the listener writes `info.state` from events, bumping this each
+        // time. A verb notes it before sending, then waits for the listener
+        // to record a stop newer than that — so it can't miss or race one.
+        var stateVersion = 0
+        var stopWaiters: [UUID: StopWaiter] = [:]
 
         init(id: String, client: DAPClient, info: Session) {
             self.id = id
@@ -54,6 +58,38 @@ actor SessionManager {
                 outputChars -= output.removeFirst().text.count
             }
         }
+    }
+
+    /// A breakpoint as requested (file and line exactly as sent) plus what
+    /// lldb-dap reported for it. The requested values are what gets resent:
+    /// lldb-dap groups breakpoints by the path in the request, and may move
+    /// the line or omit it while unverified.
+    private struct TrackedBreakpoint {
+        let file: String
+        let line: Int
+        var breakpoint: Breakpoint
+
+        var request: BPLine {
+            BPLine(line: line, condition: breakpoint.condition, hitCondition: breakpoint.hitCondition)
+        }
+    }
+
+    /// A verb waiting for the listener to record a stop or exit newer than
+    /// `after` (a `stateVersion`).
+    private struct StopWaiter {
+        let after: Int
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    /// A SIGSTOP we caused ourselves; the raw value is the stop reason we
+    /// report for it.
+    private enum OwnPause: String {
+        /// The launch pause (stopOnEntry).
+        case entry
+        /// The pause on attach.
+        case attach
+        /// `interrupt`.
+        case pause
     }
 
     /// Default seconds each launch/attach handshake step may take. Generous
@@ -143,7 +179,7 @@ actor SessionManager {
         switch target {
         case .launched:
             return "launch timed out after \(seconds)s waiting for lldb-dap; the launched process was terminated. Retry, or pass a longer timeout."
-        case .attached, .simulator:
+        case .attached:
             return "attach timed out after \(seconds)s waiting for lldb-dap; the target was detached and left running. A first attach to a new OS runtime can be slow while lldb loads symbols — retry, or pass a longer timeout."
         }
     }
@@ -156,40 +192,57 @@ actor SessionManager {
         hitCondition: String? = nil
     ) async throws -> (SessionSnapshot, Breakpoint) {
         let entry = try resolve(sessionId)
-        let resp = try await entry.client.request(
-            "setBreakpoints",
-            arguments: SetBreakpointsArgs(
-                source: .init(path: file),
-                breakpoints: [.init(line: line, condition: condition, hitCondition: hitCondition)]
-            )
-        )
-        let body = try resp.decodeBody(SetBreakpointsBody.self)
-        guard let bp = body.breakpoints.first else {
+        // Keep the file's other breakpoints; one already on this line is
+        // replaced (so its condition updates) rather than duplicated.
+        var lines = trackedBreakpoints(entry, in: file).filter { $0.line != line }.map(\.request)
+        lines.append(BPLine(line: line, condition: condition, hitCondition: hitCondition))
+        let synced = try await syncBreakpoints(entry, file: file, lines: lines)
+        guard let breakpoint = synced.last else {
             throw LlmdbError.dapFailure("setBreakpoints returned no breakpoint")
         }
-        // Stock message for unverified BPs so callers don't panic at `verified: false`.
-        let message: String? = if let bpMessage = bp.message {
-            bpMessage
-        } else if bp.verified {
-            nil
-        } else {
-            Self.unverifiedBreakpointMessage
-        }
-        // lldb-dap doesn't echo condition/hitCondition, so carry the request
-        // values through onto the tracked model.
-        let model = Breakpoint(
-            id: bp.id ?? 0,
-            verified: bp.verified,
-            line: bp.line,
-            source: bp.source?.path ?? file,
-            message: message,
-            condition: condition,
-            hitCondition: hitCondition
+        return (snapshot(entry), breakpoint)
+    }
+
+    /// The breakpoints tracked for `file` (as requested), oldest first.
+    private func trackedBreakpoints(_ entry: SessionEntry, in file: String) -> [TrackedBreakpoint] {
+        entry.breakpoints.values.filter { $0.file == file }.sorted { $0.breakpoint.id < $1.breakpoint.id }
+    }
+
+    /// Make `lines` the complete set of breakpoints in `file`. DAP's
+    /// `setBreakpoints` replaces every breakpoint in a file, so sending only
+    /// a new line would silently delete the others. Rebuilds the file's
+    /// tracking from the reply and returns its breakpoints in request order.
+    private func syncBreakpoints(
+        _ entry: SessionEntry,
+        file: String,
+        lines: [BPLine]
+    ) async throws -> [Breakpoint] {
+        let resp = try await entry.client.request(
+            "setBreakpoints",
+            arguments: SetBreakpointsArgs(source: .init(path: file), breakpoints: lines)
         )
-        if let bid = bp.id {
-            entry.breakpoints[bid] = model
+        let reported = try resp.decodeBody(SetBreakpointsBody.self).breakpoints
+        for tracked in trackedBreakpoints(entry, in: file) {
+            entry.breakpoints.removeValue(forKey: tracked.breakpoint.id)
         }
-        return (snapshot(entry), model)
+        // The reply lists breakpoints in request order. lldb-dap doesn't echo
+        // condition/hitCondition, so they come from the request.
+        return zip(lines, reported).map { requested, info in
+            let breakpoint = Breakpoint(
+                id: info.id ?? 0,
+                verified: info.verified,
+                line: info.line,
+                source: info.source?.path ?? file,
+                // Stock message so callers don't panic at `verified: false`.
+                message: info.message ?? (info.verified ? nil : Self.unverifiedBreakpointMessage),
+                condition: requested.condition,
+                hitCondition: requested.hitCondition
+            )
+            if let id = info.id {
+                entry.breakpoints[id] = TrackedBreakpoint(file: file, line: requested.line, breakpoint: breakpoint)
+            }
+            return breakpoint
+        }
     }
 
     /// Enable the given exception-breakpoint filters (e.g. `swift_throw`),
@@ -218,7 +271,7 @@ actor SessionManager {
     }
 
     func continueExecution(sessionId: String?, wait: Double? = nil) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: "continue", wait: wait ?? 60)
+        try await runUntilStop(sessionId: sessionId, command: "continue", relabelingPauseAs: nil, wait: wait ?? 60)
     }
 
     /// Set a breakpoint and continue in one call. Returns the post-continue
@@ -237,7 +290,7 @@ actor SessionManager {
 
     /// Pause a running session. Returns once the target is stopped.
     func interrupt(sessionId: String?, wait: Double? = nil) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: "pause", wait: wait ?? 10)
+        try await runUntilStop(sessionId: sessionId, command: "pause", relabelingPauseAs: .pause, wait: wait ?? 10)
     }
 
     /// Step one source line. `granularity` picks the DAP command:
@@ -247,7 +300,12 @@ actor SessionManager {
         granularity: StepGranularity,
         wait: Double? = nil
     ) async throws -> SessionSnapshot {
-        try await runUntilStop(sessionId: sessionId, command: granularity.dapCommand, wait: wait ?? 30)
+        try await runUntilStop(
+            sessionId: sessionId,
+            command: granularity.dapCommand,
+            relabelingPauseAs: nil,
+            wait: wait ?? 30
+        )
     }
 
     /// Block until the session leaves `.running` (i.e., stops or terminates).
@@ -257,36 +315,70 @@ actor SessionManager {
         if entry.info.state != .running {
             return snapshot(entry)
         }
-        let waiter = await entry.client.waitForEvent(timeout: timeout ?? 60, matching: Self.isStopOrExit)
-        _ = try await waiter.value
+        try await awaitStop(entry, after: entry.stateVersion, timeout: timeout ?? 60)
         return snapshot(entry)
     }
 
     /// `wait == 0` → fire-and-forget; otherwise block up to `wait` seconds.
+    /// `relabelingPauseAs` is set only when `command` itself causes a SIGSTOP;
+    /// any other command's stop is reported as lldb-dap describes it.
     private func runUntilStop(
         sessionId: String?,
         command: String,
+        relabelingPauseAs ownPause: OwnPause?,
         wait: Double
     ) async throws -> SessionSnapshot {
         let entry = try resolve(sessionId)
         let threadId = entry.stoppedThreadId ?? 1
-        // Only our own `pause` produces a SIGSTOP worth relabeling; any other
-        // command's stop is reported as lldb-dap describes it.
-        entry.expectedStopReason = command == "pause" ? "pause" : nil
+        entry.expectedStopReason = ownPause
+        let version = entry.stateVersion
+        _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
 
         if wait == 0 {
-            _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
-            // Optimistic — listener overwrites when the real continued/stopped event lands.
-            entry.info.state = .running
-            entry.info.stopReason = nil
+            // Optimistic, unless the listener has already recorded what
+            // happened; it overwrites this when the continued/stopped lands.
+            if entry.stateVersion == version {
+                entry.info.state = .running
+                entry.info.stopReason = nil
+            }
             return snapshot(entry)
         }
-
-        // Subscribe BEFORE sending so we don't miss the stop.
-        let waiter = await entry.client.waitForEvent(timeout: wait, matching: Self.isStopOrExit)
-        _ = try await entry.client.request(command, arguments: ThreadIdArgs(threadId: threadId))
-        _ = try await waiter.value
+        try await awaitStop(entry, after: version, timeout: wait)
         return snapshot(entry)
+    }
+
+    /// Return once the listener has recorded a stop or exit newer than
+    /// `version`. The check and the registration happen with no suspension
+    /// in between, so a stop recorded meanwhile can't be missed.
+    private func awaitStop(_ entry: SessionEntry, after version: Int, timeout: Double) async throws {
+        if entry.stateVersion > version, entry.info.state != .running {
+            return
+        }
+        let entryID = entry.id, waiterID = UUID()
+        let timer = Task { [weak self] in
+            guard await (try? Task.sleep(for: .seconds(timeout))) != nil else { return }
+            await self?.expireStopWaiter(entryID: entryID, waiterID: waiterID, timeout: timeout)
+        }
+        defer { timer.cancel() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            entry.stopWaiters[waiterID] = StopWaiter(after: version, continuation: continuation)
+        }
+    }
+
+    private func expireStopWaiter(entryID: String, waiterID: UUID, timeout: Double) {
+        sessions[entryID]?.stopWaiters.removeValue(forKey: waiterID)?.continuation
+            .resume(throwing: DAPError.timedOut(command: "waitForEvent", seconds: timeout))
+    }
+
+    /// Call after the listener changes `info.state`: bumps the version and,
+    /// if the session has left `.running`, resumes the verbs waiting for it.
+    private func recordStateChange(_ entry: SessionEntry) {
+        entry.stateVersion += 1
+        guard entry.info.state != .running else { return }
+        for (id, waiter) in entry.stopWaiters where waiter.after < entry.stateVersion {
+            entry.stopWaiters.removeValue(forKey: id)
+            waiter.continuation.resume()
+        }
     }
 
     func threads(sessionId: String?) async throws -> [Thread] {
@@ -306,14 +398,7 @@ actor SessionManager {
         frameIndex: Int = 0
     ) async throws -> (value: String, type: String?, variablesReference: Int) {
         let entry = try resolve(sessionId)
-        guard let tid = entry.stoppedThreadId else {
-            throw LlmdbError.dapFailure("no stopped thread; expr requires a paused session")
-        }
-        // Fetch just the one frame so we can pass its frameId for context.
-        let frames = try await fetchFrames(entry, threadId: tid, startFrame: frameIndex, levels: 1)
-        guard let frame = frames.first else {
-            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
-        }
+        let frame = try await frame(entry, threadId: nil, index: frameIndex)
         do {
             return try await evaluate(entry, expression: expression, frameId: frame.id)
         } catch DAPError.responseError(let command, let message)
@@ -384,60 +469,23 @@ actor SessionManager {
     /// All breakpoints currently tracked for the session, sorted by id.
     func listBreakpoints(sessionId: String?) throws -> [Breakpoint] {
         let entry = try resolve(sessionId)
-        return entry.breakpoints.values.sorted { $0.id < $1.id }
+        return entry.breakpoints.values.map(\.breakpoint).sorted { $0.id < $1.id }
     }
 
-    /// Delete a breakpoint by id. DAP has no per-id delete: we look up the
-    /// breakpoint's source, then re-issue `setBreakpoints` for that source
-    /// with the surviving lines.
+    /// Delete a breakpoint by id. DAP has no per-id delete, so the file's
+    /// remaining breakpoints are resent without it.
     func deleteBreakpoint(sessionId: String?, id: Int) async throws -> [Breakpoint] {
         let entry = try resolve(sessionId)
         guard let doomed = entry.breakpoints[id] else {
             throw LlmdbError.invalidArgument(
                 name: "id",
                 value: "\(id)",
-                valid: entry.breakpoints.keys.map { String($0) }
+                valid: entry.breakpoints.keys.sorted().map { String($0) }
             )
         }
-        guard let source = doomed.source else {
-            throw LlmdbError.dapFailure("breakpoint \(id) has no source path; cannot rebuild setBreakpoints")
-        }
-        let surviving = entry.breakpoints.values
-            .filter { $0.source == source && $0.id != id }
-        let survivors = surviving.compactMap { bp in
-            bp.line.map { BPLine(line: $0, condition: bp.condition, hitCondition: bp.hitCondition) }
-        }
-        // Keyed by line so we can re-attach condition/hitCondition (which
-        // lldb-dap doesn't echo) after the rebuild hands back fresh ids.
-        let conditionsByLine = Dictionary(
-            surviving.compactMap { bp in bp.line.map { ($0, bp) } },
-            uniquingKeysWith: { first, _ in first }
-        )
-
-        let resp = try await entry.client.request(
-            "setBreakpoints",
-            arguments: SetBreakpointsArgs(source: .init(path: source), breakpoints: survivors)
-        )
-        // Re-sync our tracking for this source from the response. lldb-dap
-        // returns the surviving BPs with their (possibly new) ids.
-        for old in entry.breakpoints.values where old.source == source {
-            entry.breakpoints.removeValue(forKey: old.id)
-        }
-        let body = try resp.decodeBody(SetBreakpointsBody.self)
-        for bp in body.breakpoints {
-            guard let bid = bp.id else { continue }
-            let prior = bp.line.flatMap { conditionsByLine[$0] }
-            entry.breakpoints[bid] = Breakpoint(
-                id: bid,
-                verified: bp.verified,
-                line: bp.line,
-                source: bp.source?.path ?? source,
-                message: bp.message,
-                condition: prior?.condition,
-                hitCondition: prior?.hitCondition
-            )
-        }
-        return entry.breakpoints.values.sorted { $0.id < $1.id }
+        let remaining = trackedBreakpoints(entry, in: doomed.file).filter { $0.breakpoint.id != id }
+        _ = try await syncBreakpoints(entry, file: doomed.file, lines: remaining.map(\.request))
+        return entry.breakpoints.values.map(\.breakpoint).sorted { $0.id < $1.id }
     }
 
     func backtrace(
@@ -446,9 +494,7 @@ actor SessionManager {
         depth: Int? = nil
     ) async throws -> [Frame] {
         let entry = try resolve(sessionId)
-        guard let tid = threadId ?? entry.stoppedThreadId else {
-            throw LlmdbError.dapFailure("no stopped thread; is the session running?")
-        }
+        let tid = try stoppedThread(entry, threadId)
         let frames = try await fetchFrames(entry, threadId: tid, startFrame: 0, levels: depth ?? 64)
         return frames.map {
             Frame(id: $0.id, name: $0.name, source: $0.source?.path, line: $0.line, column: $0.column)
@@ -461,16 +507,15 @@ actor SessionManager {
         frameIndex: Int = 0
     ) async throws -> [Local] {
         let entry = try resolve(sessionId)
-        guard let ref = try await localsScopeRef(entry, threadId: threadId, frameIndex: frameIndex) else {
+        let scopes = try await fetchScopes(entry, threadId: threadId, frameIndex: frameIndex)
+        guard let ref = scopes.first(where: { $0.name == "Locals" })?.variablesReference else {
             return []
         }
         let varsResp = try await entry.client.request(
             "variables",
             arguments: VariablesArgs(variablesReference: ref)
         )
-        return try varsResp.decodeBody(VariablesBody.self).variables.map {
-            Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
-        }
+        return try varsResp.decodeBody(VariablesBody.self).variables.map(Local.init)
     }
 
     /// The variable scopes for a frame (Locals, Globals, Registers, …), each
@@ -487,36 +532,42 @@ actor SessionManager {
         }
     }
 
-    /// Resolve the `Locals` scope's variablesReference for a frame, or nil if
-    /// the frame has no such scope. Used by `locals` and `setVariable`.
-    private func localsScopeRef(
-        _ entry: SessionEntry,
-        threadId: Int?,
-        frameIndex: Int
-    ) async throws -> Int? {
-        let scopes = try await fetchScopes(entry, threadId: threadId, frameIndex: frameIndex)
-        return scopes.first { $0.name == "Locals" }?.variablesReference
-    }
-
-    /// Fetch the raw DAP scopes for a frame, validating the thread/frame.
+    /// Fetch the raw DAP scopes for a frame.
     private func fetchScopes(
         _ entry: SessionEntry,
         threadId: Int?,
         frameIndex: Int
     ) async throws -> [DAPScope] {
+        let frame = try await frame(entry, threadId: threadId, index: frameIndex)
+        let scopesResp = try await entry.client.request("scopes", arguments: ScopesArgs(frameId: frame.id))
+        return try scopesResp.decodeBody(ScopesBody.self).scopes
+    }
+
+    /// `threadId`, else the thread of the most recent stop. Requires the
+    /// session to be stopped: `stoppedThreadId` outlives the stop (continue
+    /// reuses it), so it alone doesn't say the target is paused.
+    private func stoppedThread(_ entry: SessionEntry, _ threadId: Int?) throws -> Int {
+        guard entry.info.state == .stopped else {
+            throw LlmdbError.notStopped(entry.info.state)
+        }
         guard let tid = threadId ?? entry.stoppedThreadId else {
             throw LlmdbError.dapFailure("no stopped thread; is the session running?")
         }
-        guard frameIndex >= 0 else {
-            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0+"])
+        return tid
+    }
+
+    /// The frame at `index` on a stopped thread — fetched alone, not the full
+    /// stack. Rejects an index outside the stack.
+    private func frame(_ entry: SessionEntry, threadId: Int?, index: Int) async throws -> DAPFrame {
+        let tid = try stoppedThread(entry, threadId)
+        guard index >= 0 else {
+            throw LlmdbError.invalidArgument(name: "frame", value: "\(index)", valid: ["0+"])
         }
-        // Fetch just the one frame we need — not the full stack.
-        let frames = try await fetchFrames(entry, threadId: tid, startFrame: frameIndex, levels: 1)
+        let frames = try await fetchFrames(entry, threadId: tid, startFrame: index, levels: 1)
         guard let frame = frames.first else {
-            throw LlmdbError.invalidArgument(name: "frame", value: "\(frameIndex)", valid: ["0..<stack depth"])
+            throw LlmdbError.invalidArgument(name: "frame", value: "\(index)", valid: ["0..<stack depth"])
         }
-        let scopesResp = try await entry.client.request("scopes", arguments: ScopesArgs(frameId: frame.id))
-        return try scopesResp.decodeBody(ScopesBody.self).scopes
+        return frame
     }
 
     /// Assign a new value to a variable during a stop, then return its updated
@@ -563,9 +614,7 @@ actor SessionManager {
             "variables",
             arguments: VariablesArgs(variablesReference: variablesReference)
         )
-        return try resp.decodeBody(VariablesBody.self).variables.map {
-            Local(name: $0.name, type: $0.type, value: $0.value, variablesReference: $0.variablesReference)
-        }
+        return try resp.decodeBody(VariablesBody.self).variables.map(Local.init)
     }
 
     /// Buffered program output (stdout/stderr/console) captured so far, oldest
@@ -582,17 +631,21 @@ actor SessionManager {
     }
 
     /// End a session. `mode` nil → terminate launched targets, detach from
-    /// attached ones (the target keeps running). Returns what happened:
-    /// "terminated", "detached", or "exited" if the target had already ended.
+    /// attached ones (the target keeps running). Returns what happened.
     @discardableResult
-    func stop(sessionId: String?, mode: StopMode? = nil) async throws -> String {
+    func stop(sessionId: String?, mode: StopMode? = nil) async throws -> StopAction {
         let entry = try resolve(sessionId)
         sessions.removeValue(forKey: entry.id)
         entry.listener?.cancel()
+        // The listener is gone, so nothing will resume these.
+        for waiter in entry.stopWaiters.values {
+            waiter.continuation.resume(throwing: DAPError.closed)
+        }
+        entry.stopWaiters.removeAll()
 
-        let action: String
+        let action: StopAction
         if entry.info.state == .terminated {
-            action = "exited"
+            action = .exited
         } else {
             let mode = mode ?? Self.defaultStopMode(for: entry.info.target)
             // Best effort: if lldb-dap is wedged, terminating it below still
@@ -611,7 +664,7 @@ actor SessionManager {
     private static func defaultStopMode(for target: Session.Target) -> StopMode {
         switch target {
         case .launched: .terminate
-        case .attached, .simulator: .detach
+        case .attached: .detach
         }
     }
 
@@ -635,8 +688,7 @@ actor SessionManager {
         SessionSnapshot(
             sessionId: entry.id,
             state: entry.info.state,
-            stopReason: entry.info.stopReason,
-            topFrame: nil
+            stopReason: entry.info.stopReason
         )
     }
 
@@ -654,11 +706,30 @@ actor SessionManager {
     }
 
     private func handshake(_ entry: SessionEntry, target: Session.Target, timeout: Double) async throws {
-        // Subscribe to `initialized` BEFORE sending the initialize request.
-        // lldb-dap can emit it right after the initialize response, before
-        // launch/attach is sent — subscribing later races and loses.
-        let initWaiter = await entry.client.waitForEvent(timeout: timeout) { $0.event == "initialized" }
+        let version = entry.stateVersion
+        // Subscribe to `initialized` before sending `initialize`: lldb-dap can
+        // emit it right after the initialize response, before launch/attach
+        // is sent.
+        let initialized = await entry.client.waitForEvent(timeout: timeout) { $0.event == "initialized" }
+        do {
+            try await sendInitializeAndTarget(entry, target: target, timeout: timeout)
+        } catch {
+            initialized.cancel()
+            throw error
+        }
+        _ = try await initialized.value
 
+        // After `initialized`, send configurationDone; the stopOnEntry stop
+        // arrives shortly after (or, on some targets, already has).
+        _ = try await entry.client.request("configurationDone", timeout: timeout)
+        try await awaitStop(entry, after: version, timeout: timeout)
+    }
+
+    private func sendInitializeAndTarget(
+        _ entry: SessionEntry,
+        target: Session.Target,
+        timeout: Double
+    ) async throws {
         let initResp = try await entry.client.request(
             "initialize",
             arguments: InitializeArgs(
@@ -682,7 +753,7 @@ actor SessionManager {
 
         switch target {
         case .launched(let binary, let args):
-            entry.expectedStopReason = "entry"
+            entry.expectedStopReason = .entry
             _ = try await entry.client.request(
                 "launch",
                 arguments: LaunchArgs(
@@ -694,47 +765,38 @@ actor SessionManager {
                 timeout: timeout
             )
         case .attached(let pid):
-            entry.expectedStopReason = "attach"
+            entry.expectedStopReason = .attach
             _ = try await entry.client.request(
                 "attach",
                 arguments: AttachArgs(pid: Int(pid), stopOnEntry: true, initCommands: Self.initCommands),
                 timeout: timeout
             )
-        case .simulator:
-            throw LlmdbError.notImplemented("simulator attach")
         }
-
-        _ = try await initWaiter.value
-
-        // After `initialized`, send configurationDone; the stopOnEntry stop
-        // arrives shortly after.
-        let stopWaiter = await entry.client.waitForEvent(timeout: timeout, matching: Self.isStopOrExit)
-        _ = try await entry.client.request("configurationDone", timeout: timeout)
-        // Apply the stop here rather than relying on the listener, which may
-        // not have processed it yet when we return the snapshot.
-        let stop = try await stopWaiter.value
-        await handleEvent(stop, entryID: entry.id)
     }
 
     private func startListener(_ entry: SessionEntry) {
-        entry.listener = Task { [weak self, weak entry] in
-            guard let entry else { return }
-            let stream = await entry.client.events()
+        // Captures only the entry's immutable, Sendable parts: the task runs
+        // off the actor, and the entry's mutable state belongs to it.
+        let client = entry.client, id = entry.id
+        entry.listener = Task { [weak self] in
+            let stream = await client.events()
             for await event in stream {
-                await self?.handleEvent(event, entryID: entry.id)
+                await self?.handleEvent(event, entryID: id)
             }
-            await self?.markTerminated(entryID: entry.id)
+            await self?.markTerminated(entryID: id)
         }
     }
 
-    private func handleEvent(_ event: DAPEvent, entryID: String) async {
+    /// Apply an event to the session. Called only by the listener, in event
+    /// order — the one writer of `info.state` from events.
+    private func handleEvent(_ event: DAPEvent, entryID: String) {
         guard let entry = sessions[entryID] else { return }
         switch event.event {
         case "stopped":
             if let body = try? event.decodeBody(StoppedEventBody.self) {
                 var reason = body.reason
                 if let expected = entry.expectedStopReason, Self.isRequestedPause(body) {
-                    reason = expected
+                    reason = expected.rawValue
                 }
                 entry.info.state = .stopped
                 entry.info.stopReason = StopReason(
@@ -744,12 +806,15 @@ actor SessionManager {
                     hitBreakpointIDs: body.hitBreakpointIds
                 )
                 entry.stoppedThreadId = body.threadId ?? entry.stoppedThreadId
+                recordStateChange(entry)
             }
         case "continued":
             entry.info.state = .running
             entry.info.stopReason = nil
+            recordStateChange(entry)
         case "terminated", "exited":
             entry.info.state = .terminated
+            recordStateChange(entry)
         case "output":
             // Buffer the target's stdout/stderr/console output. Skip telemetry,
             // which carries structured analytics rather than display text.
@@ -763,32 +828,33 @@ actor SessionManager {
             // `breakpoint` events are typically updates (verified status flips
             // as modules load) and may omit source/line. Merge with what we
             // already have so we don't blow away the original source path.
+            // Only breakpoints we set are tracked; an update for an id we
+            // haven't recorded yet is covered by the setBreakpoints reply.
             if let body = try? event.decodeBody(BreakpointEventBody.self),
-               let bid = body.breakpoint.id {
-                let existing = entry.breakpoints[bid]
-                entry.breakpoints[bid] = Breakpoint(
+               let bid = body.breakpoint.id,
+               var tracked = entry.breakpoints[bid] {
+                let existing = tracked.breakpoint
+                tracked.breakpoint = Breakpoint(
                     id: bid,
                     verified: body.breakpoint.verified,
-                    line: body.breakpoint.line ?? existing?.line,
-                    source: body.breakpoint.source?.path ?? existing?.source,
-                    message: body.breakpoint.message ?? existing?.message,
-                    condition: existing?.condition,
-                    hitCondition: existing?.hitCondition
+                    line: body.breakpoint.line ?? existing.line,
+                    source: body.breakpoint.source?.path ?? existing.source,
+                    message: body.breakpoint.message ?? (body.breakpoint.verified ? nil : existing.message),
+                    condition: existing.condition,
+                    hitCondition: existing.hitCondition
                 )
+                entry.breakpoints[bid] = tracked
             }
         default:
             break
         }
     }
 
+    /// lldb-dap's event stream ended (it exited).
     private func markTerminated(entryID: String) {
-        sessions[entryID]?.info.state = .terminated
-    }
-
-    /// True for the DAP events that mean a session has left `.running`:
-    /// it either stopped at a breakpoint/step or the target ended.
-    private static let isStopOrExit: @Sendable (DAPEvent) -> Bool = {
-        $0.event == "stopped" || $0.event == "terminated" || $0.event == "exited"
+        guard let entry = sessions[entryID] else { return }
+        entry.info.state = .terminated
+        recordStateChange(entry)
     }
 
     /// A stop lldb-dap may report for a pause we requested: SIGSTOP (as
@@ -803,5 +869,16 @@ actor SessionManager {
     private static func makeID() -> String {
         let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
         return String((0..<6).map { _ in alphabet.randomElement()! })
+    }
+}
+
+extension Local {
+    init(_ variable: DAPVariable) {
+        self.init(
+            name: variable.name,
+            type: variable.type,
+            value: variable.value,
+            variablesReference: variable.variablesReference
+        )
     }
 }

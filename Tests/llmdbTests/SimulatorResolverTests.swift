@@ -58,8 +58,13 @@ struct SimulatorResolverTests {
         let json = try #require(#"""
         { "devices": { "com.apple.CoreSimulator.SimRuntime.iOS-17-0": [] } }
         """#.data(using: .utf8))
-        #expect(throws: LlmdbError.self) {
+        // A simulator error, not "llmdbd unreachable" — agents read that as
+        // the daemon being down.
+        #expect {
             try SimulatorResolver.parseBootedUDID(json: json)
+        } throws: { error in
+            guard case LlmdbError.simulator(let message) = error else { return false }
+            return message.hasPrefix("no booted iOS Simulator")
         }
     }
 
@@ -106,9 +111,20 @@ struct SimulatorResolverTests {
             // Loose shape: ABCDEF12-3456-... UUIDs are 36 chars with dashes,
             // but don't be too strict — Simulator UDIDs are real UUIDs.
             #expect(udid.contains("-"))
-        } catch let LlmdbError.daemonUnreachable(msg) where msg.contains("no booted") {
+        } catch let LlmdbError.simulator(msg) where msg.contains("no booted") {
             // Acceptable: no simulator booted on this machine. Test environment
             // doesn't require one.
+        }
+    }
+
+    @Test
+    func pgrepReportsNotRunningOnNoMatch() async throws {
+        // pgrep exits 1 on no match; that's "not running", not a failure.
+        await #expect {
+            try await SimulatorResolver.pgrepHostPID(udid: "NO-SUCH-UDID", binaryName: "NoSuchBinary")
+        } throws: { error in
+            guard case LlmdbError.simulator(let message) = error else { return false }
+            return message == "`NoSuchBinary` not running in simulator NO-SUCH-UDID"
         }
     }
 }
